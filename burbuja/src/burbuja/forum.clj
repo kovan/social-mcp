@@ -26,13 +26,17 @@
                          "TRUE\t"
                          "0\t"
                          name "\t"
-                         value "\n")))))
+                         value "\n"))))
+      ;; xf_consent is stored in LocalStorage by burbuja.info, not the cookie jar.
+      ;; Inject it manually so XenForo allows POST actions.
+      (when-not (some #(= (:name %) "xf_consent") cks)
+        (.write w ".burbuja.info\tTRUE\t/\tFALSE\t0\txf_consent\t1\n")))
     (reset! cookie-jar (.getAbsolutePath f))
     (binding [*out* *err*]
       (println (str "Loaded " (count cks) " cookies for burbuja.info")))))
 
 (defn- curl-request [url & {:keys [method params ajax?]}]
-  (init-cookies!)
+  (when (nil? @cookie-jar) (init-cookies!))
   (let [body-file (java.io.File/createTempFile "curl-body" ".html")
         args (cond-> ["curl" "-sSL"
                       "-b" @cookie-jar "-c" @cookie-jar
