@@ -1,0 +1,7 @@
+.cpcache/
+target/
+*.class
+__pycache__/
+*.pyc
+*.pyo
+~/.instagram_session.json
