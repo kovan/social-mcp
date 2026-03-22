@@ -70,6 +70,11 @@
                   :properties {:shortcode {:type "string"
                                            :description "Post shortcode (the part after /p/ in the URL)"}}
                   :required ["shortcode"]}}
+   {:name "notifications"
+    :description "Get your Instagram notifications (likes, comments, follows, mentions)."
+    :inputSchema {:type "object"
+                  :properties {:n {:type "number"
+                                   :description "Number of notifications (default 20, max 50)"}}}}
    {:name "follow_user"
     :description "Follow an Instagram user."
     :inputSchema {:type "object"
@@ -238,6 +243,31 @@
             "generate_image"
             (let [{:keys [path]} (api/generate-image arguments)]
               (str "Image generated: " path "\nUse upload_photo with this path to post it."))
+
+            "notifications"
+            (let [items (api/notifications (clamp-n arguments 20))]
+              (if (seq items)
+                (str "# Notifications (" (count items) ")\n\n"
+                     (str/join "\n---\n\n"
+                       (map-indexed
+                         (fn [i {:keys [type text comment_text profile_name timestamp post_url]}]
+                           (let [age (when timestamp
+                                       (try
+                                         (let [epoch (long (Double/parseDouble (str timestamp)))
+                                               diff (- (.getEpochSecond (java.time.Instant/now)) epoch)]
+                                           (cond
+                                             (< diff 60) "just now"
+                                             (< diff 3600) (str (quot diff 60) "m ago")
+                                             (< diff 86400) (str (quot diff 3600) "h ago")
+                                             :else (str (quot diff 86400) "d ago")))
+                                         (catch Exception _ nil)))]
+                             (str (inc i) ". **" (or profile_name "?") "** - " (or type "?")
+                                  (when age (str " (" age ")"))
+                                  (when (seq text) (str "\n" text))
+                                  (when (seq comment_text) (str "\n> " comment_text))
+                                  (when (seq post_url) (str "\nPost: " post_url)))))
+                         items)))
+                "No notifications found."))
 
             "follow_user"
             (let [{:keys [followed username]} (api/follow-user (:username arguments))]

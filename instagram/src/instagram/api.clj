@@ -49,6 +49,9 @@
 (defn generate-image [args]
   (run-python "generate_image" args))
 
+(defn notifications [n]
+  (run-python "notifications" {:n n}))
+
 (defn follow-user [username]
   (run-python "follow_user" {:username username}))
 
