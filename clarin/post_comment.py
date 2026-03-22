@@ -11,7 +11,7 @@ def post_comment(article_url, body, parent_id=None):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, channel="chrome")
 
-        # Inject Chrome cookies
+        # Inject Chrome cookies for both clarin.com and viafoura.co
         cookies = []
         for domain in ["clarin.com", "viafoura.co"]:
             cj = browser_cookie3.chrome(domain_name=domain)
@@ -33,27 +33,34 @@ def post_comment(article_url, body, parent_id=None):
         page = ctx.new_page()
         page.goto(article_url, wait_until="domcontentloaded", timeout=30000)
 
-        # Remove consent overlays
+        # Accept consent overlay
+        time.sleep(3)
+        try:
+            page.locator("button.fc-cta-consent").first.click(timeout=5000)
+        except Exception:
+            pass
         time.sleep(2)
+
+        # Remove any remaining consent overlays
         page.evaluate(
             """() => {
-            document.querySelectorAll('.fc-consent-root, .fc-dialog-overlay, [class*="consent"], [class*="cookie-banner"]')
+            document.querySelectorAll('.fc-consent-root, .fc-dialog-overlay')
                 .forEach(el => el.remove());
         }"""
         )
 
-        # Scroll to load comments
+        # Scroll to load comments widget
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         time.sleep(8)
 
-        # Force comment form visible
+        # Force comment form visible (it starts collapsed with display:none)
         page.evaluate(
             """document.querySelectorAll(".vf-new-content")
                .forEach(el => el.style.setProperty("display", "block", "important"))"""
         )
         time.sleep(1)
 
-        # Fill and submit
+        # Fill textarea and submit (force bypasses any remaining overlay issues)
         textarea = page.locator(
             'textarea[data-testid="vf-conversations-new-comment-textarea"]'
         ).first
