@@ -280,9 +280,11 @@
            (when-let [n (:name user)] (str " (" n ")"))))))
 
 (defn notifications
-  "Get recent notifications. Uses REST v2 endpoint (no GraphQL query ID needed)."
-  [n]
-  (let [resp (curl-authed (str "https://x.com/i/api/2/notifications/all.json"
+  "Get recent notifications. Uses REST v2 endpoint (no GraphQL query ID needed).
+   tab can be :all or :mentions (default :mentions for actual replies)."
+  [n & {:keys [tab] :or {tab :mentions}}]
+  (let [endpoint (if (= tab :all) "all" "mentions")
+        resp (curl-authed (str "https://x.com/i/api/2/notifications/" endpoint ".json"
                                "?include_profile_interstitial_type=1"
                                "&include_blocking=1"
                                "&include_blocked_by=1"
@@ -290,6 +292,15 @@
                                "&include_mute_edge=1"
                                "&include_can_dm=1"
                                "&skip_status=1"
+                               "&cards_platform=Web-12"
+                               "&include_entities=1"
+                               "&include_user_entities=1"
+                               "&include_cards=1"
+                               "&send_error_codes=1"
+                               "&tweet_mode=extended"
+                               "&include_ext_has_nft_avatar=1"
+                               "&include_ext_is_blue_verified=1"
+                               "&include_ext_verified_type=1"
                                "&count=" n))]
     (when (not= 200 (:status resp))
       (throw (ex-info (str "Notifications failed: HTTP " (:status resp)) {})))

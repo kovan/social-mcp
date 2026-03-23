@@ -177,21 +177,56 @@
       "Tweet posted (could not extract URL from response).")))
 
 (defn format-notifications
-  "Format notifications response from v2 REST endpoint."
+  "Format notifications response from v2 REST endpoint.
+   Works for both all.json and mentions.json - the mentions endpoint
+   returns tweets directly in globalObjects.tweets."
   [data]
   (let [notifications (get-in data [:globalObjects :notifications])
         tweets (get-in data [:globalObjects :tweets])
         users (get-in data [:globalObjects :users])
-        ;; Get timeline entries for ordering
+        ;; For mentions endpoint: tweets are the notifications themselves
+        ;; For all endpoint: notifications contain references to tweets
+        ;; Try mentions-style first (direct tweets), then fall back to all-style
         instructions (get-in data [:timeline :instructions])
-        entries (->> instructions
-                     (mapcat :addEntries)
-                     (mapcat :entries)
-                     (concat (->> instructions (mapcat :entries)))
-                     (filter #(str/starts-with? (or (get-in % [:content :operation :cursor :entryIdToReplace])
-                                                    (:entryId %)
-                                                    "") "notification-")))]
-    (if (and notifications (seq notifications))
+        ;; Extract entry IDs from timeline for ordering
+        timeline-entries (->> instructions
+                              (mapcat (fn [inst]
+                                        (or (:entries inst)
+                                            (get-in inst [:addEntries :entries]))))
+                              (remove nil?))]
+    (cond
+      ;; Mentions-style: tweets are in globalObjects.tweets
+      ;; Extract all tweets, sort by ID descending (newest first)
+      (seq tweets)
+      (let [tweet-entries (->> tweets
+                               (sort-by (fn [[k _]] (- (or (parse-long (name k)) 0))))
+                               (take 20)
+                               (map (fn [[tweet-key tweet]]
+                                      (let [tweet-id (name tweet-key)
+                                            user-id (:user_id_str tweet)
+                                            user (when user-id (get users (keyword user-id)))
+                                            text (or (:full_text tweet) (:text tweet) "")
+                                            screen-name (or (:screen_name user) "?")
+                                            created (:created_at tweet)
+                                            reply-count (or (:reply_count tweet) 0)
+                                            like-count (or (:favorite_count tweet) 0)
+                                            rt-count (or (:retweet_count tweet) 0)
+                                            in-reply-to (:in_reply_to_screen_name tweet)]
+                                        (str "**@" screen-name "**"
+                                             (when in-reply-to (str " replying to @" in-reply-to))
+                                             (when created (str " (" created ")"))
+                                             "\n" (subs text 0 (min 300 (count text)))
+                                             "\n" like-count " likes | " rt-count " RTs | " reply-count " replies"
+                                             "\nhttps://x.com/" screen-name "/status/" tweet-id))))
+                               (remove nil?))]
+        (if (seq tweet-entries)
+          (str "# Notifications (" (count tweet-entries) ")\n\n"
+               (str/join "\n\n---\n\n"
+                 (map-indexed (fn [i text] (str (inc i) ". " text)) tweet-entries)))
+          "# Notifications\n\nNo mentions found."))
+
+      ;; All-style: notifications with message text
+      (and notifications (seq notifications))
       (let [notif-items
             (for [[nid notif] (take 20 (sort-by (fn [[_ n]] (- (or (parse-long (str (:timestampMs n))) 0))) notifications))]
               (let [message (get-in notif [:message :text])
@@ -202,23 +237,23 @@
                     tweet-user-id (:user_id_str tweet)
                     tweet-user (when tweet-user-id (get users (keyword tweet-user-id)))
                     screen-name (:screen_name tweet-user)
-                    ;; From users (who triggered the notification)
                     from-ids (get-in notif [:template :aggregateUserActionsV1 :fromUsers])
                     from-names (->> from-ids
                                     (map #(get-in % [:user :id]))
                                     (map #(when % (get users (keyword %))))
                                     (map :screen_name)
                                     (remove nil?)
-                                    (take 3))
-                    ts (:timestampMs notif)]
+                                    (take 3))]
                 (str (when (seq from-names)
                        (str "@" (str/join ", @" from-names) " | "))
-                     (or message "notification") "\n"
+                     (or message "notification")
                      (when (seq tweet-text)
-                       (str "> " (subs tweet-text 0 (min 200 (count tweet-text))) "\n"))
+                       (str "\n> " (subs tweet-text 0 (min 200 (count tweet-text)))))
                      (when (and screen-name first-tweet-id)
-                       (str "https://x.com/" screen-name "/status/" first-tweet-id "\n")))))]
+                       (str "\nhttps://x.com/" screen-name "/status/" first-tweet-id)))))]
         (str "# Notifications (" (count notif-items) ")\n\n"
-             (str/join "\n---\n\n"
+             (str/join "\n\n---\n\n"
                (map-indexed (fn [i text] (str (inc i) ". " text)) notif-items))))
+
+      :else
       "# Notifications\n\nNo notifications found.")))
