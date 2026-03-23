@@ -53,7 +53,11 @@
               (str "Facebook auth OK. User ID: " user-id ", fb_dtsg: " fb-dtsg "..."))
 
             "news_feed"
-            (let [n (or (:n arguments) 10)
+            (let [n (let [raw (:n arguments)]
+                      (cond (nil? raw) 10
+                            (number? raw) (int raw)
+                            (string? raw) (or (parse-long raw) 10)
+                            :else 10))
                   posts (api/news-feed n)]
               (if (seq posts)
                 (str "# News Feed (" (count posts) " posts)\n\n"
@@ -73,7 +77,11 @@
             "page_posts"
             (let [page (str/replace (or (:page arguments) "") #"https?://[^/]+/" "")
                   page-name (str/replace page #"/$" "")
-                  n (or (:n arguments) 10)
+                  n (let [raw (:n arguments)]
+                      (cond (nil? raw) 10
+                            (number? raw) (int raw)
+                            (string? raw) (or (parse-long raw) 10)
+                            :else 10))
                   posts (api/page-posts page-name n)]
               (if (seq posts)
                 (str "# Posts from " page-name " (" (count posts) " posts)\n\n"
