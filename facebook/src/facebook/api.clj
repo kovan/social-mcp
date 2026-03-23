@@ -4,7 +4,7 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [facebook.cookies :as cookies])
-  (:import [java.net URLEncoder]
+  (:import [java.net URLEncoder URLDecoder]
            [java.io File]))
 
 (def ^:private ua
@@ -26,13 +26,14 @@
         (.write w "# Netscape HTTP Cookie File\n")
         (doseq [{:keys [name value path host]} cks]
           (when (seq value)
-            (.write w (str host "\t"
-                          (if (str/starts-with? host ".") "TRUE" "FALSE") "\t"
-                          (or path "/") "\t"
-                          "TRUE\t"
-                          "0\t"
-                          name "\t"
-                          value "\n")))))
+            (let [decoded (try (URLDecoder/decode value "UTF-8") (catch Exception _ value))]
+              (.write w (str host "\t"
+                            (if (str/starts-with? host ".") "TRUE" "FALSE") "\t"
+                            (or path "/") "\t"
+                            "TRUE\t"
+                            "0\t"
+                            name "\t"
+                            decoded "\n"))))))
       (reset! cookie-jar (.getAbsolutePath f))
       (when c-user (reset! user-id c-user))
       (binding [*out* *err*]
@@ -45,10 +46,16 @@
   [url]
   (init-cookies!)
   (let [body-file (File/createTempFile "fb-page" ".html")
-        args ["curl" "-sSL"
+        args ["curl" "-sSL" "--compressed"
               "-b" @cookie-jar "-c" @cookie-jar
               "-H" (str "User-Agent: " ua)
-              "-H" "sec-fetch-site: same-origin"
+              "-H" "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+              "-H" "Accept-Language: en-US,en;q=0.9"
+              "-H" "Sec-Fetch-Dest: document"
+              "-H" "Sec-Fetch-Mode: navigate"
+              "-H" "Sec-Fetch-Site: none"
+              "-H" "Sec-Fetch-User: ?1"
+              "-H" "Upgrade-Insecure-Requests: 1"
               "-o" (.getAbsolutePath body-file)
               "-w" "%{http_code}"
               url]
@@ -144,23 +151,90 @@
                           {:body (subs (:body resp) 0 (min 500 (count (:body resp))))})))
         (:data resp)))))
 
-;; --- doc_ids (to be discovered via Chrome DevTools) ---
-(def ^:private doc-ids
-  {:news-feed      nil  ;; TODO: discover
-   :page-posts     nil  ;; TODO: discover
-   :post-comments  nil  ;; TODO: discover
-   :create-comment nil  ;; TODO: discover
-   :notifications  nil  ;; TODO: discover
-   :search         nil  ;; TODO: discover
-   })
+;; --- Extra tokens extracted from HTML ---
+(def ^:private lsd-token (atom nil))
+(def ^:private jazoest (atom nil))
+
+(defn- extract-tokens!
+  "Extract fb_dtsg, lsd, jazoest from Facebook HTML.
+   Facebook pre-renders feed data in the initial HTML load."
+  []
+  (when-not @fb-dtsg
+    (binding [*out* *err*] (println "Extracting Facebook tokens..."))
+    (let [resp (curl-get "https://www.facebook.com/")
+          body (:body resp)
+          dtsg (or (second (re-find #"\"DTSGInitialData\",\[\],\{\"token\":\"([^\"]+)\"" body))
+                   (second (re-find #"\"dtsg\":\{\"token\":\"([^\"]+)\"" body)))
+          lsd (second (re-find #"\"LSD\",\[\],\{\"token\":\"([^\"]+)\"" body))
+          jaz (second (re-find #"jazoest=(\d+)" body))]
+      (if dtsg
+        (do (reset! fb-dtsg dtsg)
+            (when lsd (reset! lsd-token lsd))
+            (when jaz (reset! jazoest jaz))
+            (binding [*out* *err*] (println "Got Facebook tokens")))
+        (throw (ex-info "Could not extract fb_dtsg - make sure you're logged in to Facebook in Chrome" {}))))))
+
+;; --- Feed extraction from pre-rendered HTML ---
+(defn- extract-feed-from-html
+  "Extract feed posts from Facebook's pre-rendered HTML data.
+   Facebook embeds relay data as JSON in the initial page load."
+  [html]
+  (let [marker "\"is_text_only_story\""
+        results (atom [])
+        seen (atom #{})]
+    (loop [search-from 0]
+      (let [idx (.indexOf html marker (int search-from))]
+        (when (>= idx 0)
+          ;; Get a window around this story marker
+          (let [window (subs html idx (min (count html) (+ idx 2000)))
+                ;; Extract message text - use a pattern that matches across nested braces
+                text-match (re-find #"\"text\":\"((?:[^\"\\]|\\.){10,})\"" window)]
+            (when text-match
+              (let [raw-text (second text-match)
+                    key (subs raw-text 0 (min 30 (count raw-text)))]
+                (when-not (contains? @seen key)
+                  (swap! seen conj key)
+                  ;; Look backwards for author name
+                  (let [before-start (max 0 (- idx 3000))
+                        before (subs html before-start idx)
+                        names (->> (re-seq #"\"name\":\"([^\"]{2,60})\"" before)
+                                   (map second)
+                                   (remove #(contains? #{"display" "custom" "everyone"
+                                                          "CometFeedStory" "left" "right"} %)))
+                        author (or (last names) "?")]
+                    (swap! results conj
+                      {:author author
+                       :text raw-text}))))))
+          (recur (+ idx (count marker))))))
+    @results))
 
 ;; --- Public API functions ---
-;; These will be implemented once doc_ids are discovered.
-;; For now, provide the init function to test auth.
 
 (defn init!
   "Initialize cookies and extract fb_dtsg. Call this to verify auth works."
   []
   (init-cookies!)
-  (extract-fb-dtsg!)
+  (extract-tokens!)
   {:user-id @user-id :fb-dtsg (subs @fb-dtsg 0 (min 10 (count @fb-dtsg)))})
+
+(defn news-feed
+  "Get news feed posts from the pre-rendered Facebook HTML."
+  [n]
+  (init-cookies!)
+  (let [resp (curl-get "https://www.facebook.com/")
+        body (:body resp)]
+    ;; Also extract tokens while we're at it
+    (when-not @fb-dtsg
+      (let [dtsg (or (second (re-find #"\"DTSGInitialData\",\[\],\{\"token\":\"([^\"]+)\"" body))
+                     (second (re-find #"\"dtsg\":\{\"token\":\"([^\"]+)\"" body)))]
+        (when dtsg (reset! fb-dtsg dtsg))))
+    (take n (extract-feed-from-html body))))
+
+(defn page-posts
+  "Get posts from a specific Facebook page."
+  [page-name n]
+  (init-cookies!)
+  (let [url (str "https://www.facebook.com/" (str/replace page-name #"^@" "") "/")
+        resp (curl-get url)
+        body (:body resp)]
+    (take n (extract-feed-from-html body))))
