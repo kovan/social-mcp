@@ -118,10 +118,12 @@
               (fmt/format-create-result data))
 
             "notifications"
-            (let [;; Try mentions endpoint first
-                  data (api/notifications (clamp-n arguments 20))
-                  mentions-result (fmt/format-notifications data)]
-              (if (str/includes? mentions-result "No notifications found")
+            (let [mentions-result (try
+                                   (let [data (api/notifications (clamp-n arguments 20))]
+                                     (fmt/format-notifications data))
+                                   (catch Exception _ nil))]
+              (if (or (nil? mentions-result)
+                      (str/includes? (or mentions-result "") "No notifications found"))
                 ;; Fallback: search for replies to our account
                 (let [search-data (api/search-tweets "to:shankara_pillai OR @shankara_pillai"
                                     (clamp-n arguments 20) :sort "Latest")]
