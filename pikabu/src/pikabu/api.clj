@@ -1,7 +1,8 @@
 (ns pikabu.api
   "Read-only access to Pikabu via HTML scraping and XML comments endpoint."
   (:require [clojure.string :as str]
-            [clojure.data.xml :as xml])
+            [clojure.data.xml :as xml]
+            [pikabu.proxy :as px])
   (:import [org.jsoup Jsoup]
            [org.jsoup.nodes Document Element]
            [org.jsoup.select Elements]
@@ -10,18 +11,11 @@
 (def ^:private ua
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
 
-(defn- fetch-html
-  "Fetch a URL and return a Jsoup Document."
-  ^Document [^String url]
-  (-> (Jsoup/connect url)
-      (.userAgent ua)
-      (.timeout 15000)
-      (.get)))
-
 (defn- fetch-bytes
   "Fetch raw bytes from URL via curl (for windows-1251 encoded pages)."
   [^String url]
-  (let [pb (ProcessBuilder. ["curl" "-sSL" "-H" (str "User-Agent: " ua) url])
+  (let [args (px/curl-args ["-sSL" "-H" (str "User-Agent: " ua) url])
+        pb (ProcessBuilder. ^java.util.List args)
         proc (.start pb)
         out (.readAllBytes (.getInputStream proc))
         _ (.waitFor proc)]

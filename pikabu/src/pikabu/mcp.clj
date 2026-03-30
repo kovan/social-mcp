@@ -3,7 +3,8 @@
             [clojure.string :as str]
             [pikabu.api :as api]
             [pikabu.format :as fmt]
-            [pikabu.web :as web])
+            [pikabu.web :as web]
+            [pikabu.proxy :as px])
   (:import [java.io BufferedReader InputStreamReader])
   (:gen-class))
 
@@ -78,7 +79,13 @@
    {:name "notifications"
     :description "Get notifications/events for the logged-in user. Shows replies to your comments, mentions, etc. Single request instead of scanning individual stories."
     :inputSchema {:type "object"
-                  :properties {}}}])
+                  :properties {}}}
+   {:name "set_proxy"
+    :description "Set or clear the HTTP proxy for all Pikabu requests. Useful to bypass rate limiting (429). Pass empty string to clear."
+    :inputSchema {:type "object"
+                  :properties {:url {:type "string"
+                                     :description "Proxy URL (e.g. http://1.2.3.4:8080) or empty to clear"}}
+                  :required ["url"]}}])
 
 (defn- respond [id result]
   {:jsonrpc "2.0" :id id :result result})
@@ -161,6 +168,14 @@
 
             "notifications"
             (web/notifications)
+
+            "set_proxy"
+            (let [url (str/trim (or (:url arguments) ""))]
+              (if (seq url)
+                (do (px/set-proxy! url)
+                    (str "Proxy set to: " url))
+                (do (px/set-proxy! nil)
+                    "Proxy cleared.")))
 
             (throw (ex-info (str "Unknown tool: " name) {})))]
       (respond id (tool-result result)))

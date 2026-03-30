@@ -3,7 +3,8 @@
   (:require [clojure.string :as str]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
-            [pikabu.cookies :as cookies])
+            [pikabu.cookies :as cookies]
+            [pikabu.proxy :as px])
   (:import [java.net URLEncoder]
            [org.jsoup Jsoup]
            [org.jsoup.nodes Document Element]
@@ -39,10 +40,11 @@
   "Visit main page to establish session cookies before making API calls."
   (init-cookies!)
   (when-not @session-initialized
-    (let [pb (ProcessBuilder. ["curl" "-sSL"
-                                "-b" @cookie-jar "-c" @cookie-jar
-                                "-H" (str "User-Agent: " ua)
-                                "https://pikabu.ru/"])
+    (let [args (px/curl-args ["-sSL"
+                              "-b" @cookie-jar "-c" @cookie-jar
+                              "-H" (str "User-Agent: " ua)
+                              "https://pikabu.ru/"])
+          pb (ProcessBuilder. ^java.util.List args)
           proc (.start pb)]
       (slurp (.getInputStream proc))
       (.waitFor proc)
@@ -60,7 +62,7 @@
                            (str (URLEncoder/encode (name k) "UTF-8") "="
                                 (URLEncoder/encode (str v) "UTF-8")))
                          form-params))
-        args ["curl" "-sSL"
+        args (px/curl-args ["-sSL"
               "-b" @cookie-jar "-c" @cookie-jar
               "-H" (str "User-Agent: " ua)
               "-H" "X-Requested-With: XMLHttpRequest"
@@ -68,7 +70,7 @@
               "-d" form-data
               "-o" (.getAbsolutePath body-file)
               "-w" "%{http_code}"
-              url]
+              url])
         pb (ProcessBuilder. ^java.util.List args)
         proc (.start pb)
         status-str (str/trim (slurp (.getInputStream proc)))
@@ -88,12 +90,12 @@
   [url]
   (ensure-session!)
   (let [out-file (java.io.File/createTempFile "pikabu-get" ".html")
-        args ["curl" "-sSL"
+        args (px/curl-args ["-sSL"
               "-b" @cookie-jar "-c" @cookie-jar
               "-H" (str "User-Agent: " ua)
               "-o" (.getAbsolutePath out-file)
               "-w" "%{http_code}"
-              url]
+              url])
         pb (ProcessBuilder. ^java.util.List args)
         proc (.start pb)
         status-str (str/trim (slurp (.getInputStream proc)))
