@@ -77,9 +77,10 @@
                                       :description "Reply text"}}
                   :required ["story_id" "parent_id" "text"]}}
    {:name "notifications"
-    :description "Get notifications/events for the logged-in user. Shows replies to your comments, mentions, etc. Single request instead of scanning individual stories."
+    :description "Get replies to your comments. Single request via /answers page. Use page parameter for older replies."
     :inputSchema {:type "object"
-                  :properties {}}}
+                  :properties {:page {:type "number"
+                                      :description "Page number (default 1)"}}}}
    {:name "mark_answers_read"
     :description "Clear the answers bell by marking all replies as read."
     :inputSchema {:type "object"
@@ -171,7 +172,7 @@
               :parent-id (:parent_id arguments))
 
             "notifications"
-            (web/notifications)
+            (web/notifications :page (get-page arguments))
 
             "mark_answers_read"
             (web/mark-answers-read)
