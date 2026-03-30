@@ -1,10 +1,13 @@
 (ns pikabu.web
-  "Authenticated web interactions with Pikabu (comment, vote)."
+  "Authenticated web interactions with Pikabu (comment, vote, notifications)."
   (:require [clojure.string :as str]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
             [pikabu.cookies :as cookies])
-  (:import [java.net URLEncoder]))
+  (:import [java.net URLEncoder]
+           [org.jsoup Jsoup]
+           [org.jsoup.nodes Document Element]
+           [org.jsoup.select Elements]))
 
 (def ^:private ua
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
@@ -79,6 +82,71 @@
     {:status (or (parse-long status-str) 0)
      :body body
      :data (try (json/read-str body :key-fn keyword) (catch Exception _ nil))}))
+
+(defn- api-get
+  "Make an authenticated GET request to Pikabu. Returns {:bytes raw-bytes :status http-code}."
+  [url]
+  (ensure-session!)
+  (let [out-file (java.io.File/createTempFile "pikabu-get" ".html")
+        args ["curl" "-sSL"
+              "-b" @cookie-jar "-c" @cookie-jar
+              "-H" (str "User-Agent: " ua)
+              "-o" (.getAbsolutePath out-file)
+              "-w" "%{http_code}"
+              url]
+        pb (ProcessBuilder. ^java.util.List args)
+        proc (.start pb)
+        status-str (str/trim (slurp (.getInputStream proc)))
+        _ (.waitFor proc)
+        out-bytes (.readAllBytes (java.io.FileInputStream. out-file))
+        status (or (parse-long status-str) 0)]
+    (.delete out-file)
+    {:bytes out-bytes :status status}))
+
+(defn- parse-html-bytes
+  "Parse HTML bytes as windows-1251 into a Jsoup Document."
+  ^Document [^bytes html-bytes ^String base-uri]
+  (Jsoup/parse (java.io.ByteArrayInputStream. html-bytes) "windows-1251" base-uri))
+
+(defn notifications
+  "Fetch replies to our comments from /answers page (single authenticated request).
+   Returns pairs of [our comment, their reply] with story context."
+  []
+  (let [{:keys [bytes status]} (api-get "https://pikabu.ru/answers")]
+    (when (not= status 200)
+      (throw (ex-info (str "HTTP " status " from Pikabu (rate-limited? try again later)") {})))
+    (let [doc (parse-html-bytes bytes "https://pikabu.ru/answers")
+          comments (.select doc ".comment[data-id]")
+          bell (.selectFirst doc ".bell[data-role=answers]")
+          unread-count (when bell (str/trim (.text bell)))]
+      (if (zero? (.size comments))
+        (str "No replies found." (when unread-count (str " (Bell shows: " unread-count ")")))
+        (let [pairs (partition 2 comments)
+              formatted
+              (map-indexed
+                (fn [i [our-comment reply]]
+                  (let [our-nick (when-let [el (.selectFirst ^Element our-comment ".user__nick")]
+                                  (str/trim (.text el)))
+                        reply-nick (when-let [el (.selectFirst ^Element reply ".user__nick")]
+                                    (str/trim (.text el)))
+                        reply-text (when-let [el (.selectFirst ^Element reply ".comment__content")]
+                                    (str/trim (.text el)))
+                        our-text (when-let [el (.selectFirst ^Element our-comment ".comment__content")]
+                                  (let [t (str/trim (.text el))]
+                                    (if (> (count t) 100) (str (subs t 0 100) "...") t)))
+                        story-link (.selectFirst ^Element reply "a.comment__story-link, a[href*='/story/']")
+                        story-url (when story-link (.attr story-link "href"))
+                        comment-id (.attr ^Element reply "data-id")]
+                    (str (inc i) ". **" (or reply-nick "?") "** replied to you"
+                         (when story-url (str " on " story-url))
+                         "\n   reply_id=" comment-id
+                         "\n   > " (or (when (seq our-text) our-text) "[your comment]")
+                         "\n   " (or reply-text "[reply text]"))))
+                pairs)]
+          (str "# Replies (" (count pairs) " answers"
+               (when unread-count (str ", bell: " unread-count))
+               ")\n\n"
+               (str/join "\n\n---\n\n" formatted)))))))
 
 (defn post-comment
   "Post a comment on a Pikabu story."

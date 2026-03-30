@@ -74,7 +74,11 @@
                                            :description "Comment ID to reply to"}
                                :text {:type "string"
                                       :description "Reply text"}}
-                  :required ["story_id" "parent_id" "text"]}}])
+                  :required ["story_id" "parent_id" "text"]}}
+   {:name "notifications"
+    :description "Get notifications/events for the logged-in user. Shows replies to your comments, mentions, etc. Single request instead of scanning individual stories."
+    :inputSchema {:type "object"
+                  :properties {}}}])
 
 (defn- respond [id result]
   {:jsonrpc "2.0" :id id :result result})
@@ -154,6 +158,9 @@
             "reply_comment"
             (web/post-comment (:story_id arguments) (:text arguments)
               :parent-id (:parent_id arguments))
+
+            "notifications"
+            (web/notifications)
 
             (throw (ex-info (str "Unknown tool: " name) {})))]
       (respond id (tool-result result)))
