@@ -232,6 +232,30 @@
          " (" (count posts) " posts on this page)\n\n"
          (str/join "\n\n---\n\n" (map format-post posts)))))
 
+(defn delete-post [post-url]
+  (let [resp (get-page post-url)]
+    (when-not (= 200 (:status resp))
+      (throw (ex-info (str "HTTP " (:status resp) " fetching post") {:url post-url})))
+    (let [doc (Jsoup/parse ^String (:body resp))
+          post-id (or (second (re-find #"post-(\d+)" post-url))
+                      (second (re-find #"posts/(\d+)" post-url))
+                      (throw (ex-info "Cannot extract post ID from URL" {:url post-url})))
+          csrf (or (extract-csrf (:body resp))
+                   (throw (ex-info "No CSRF token on page" {})))
+          delete-url (str "https://www.burbuja.info/inmobiliaria/posts/" post-id "/delete")
+          del-resp (post-form delete-url
+                    {"_xfToken" csrf
+                     "_xfRequestUri" (or (some-> (.selectFirst doc "link[rel=canonical]") (.attr "href"))
+                                         post-url)
+                     "_xfNoRedirect" "1"
+                     "_xfResponseType" "json"}
+                    :ajax? true)]
+      (if (<= 200 (:status del-resp) 303)
+        (str "Post " post-id " deleted successfully.")
+        (throw (ex-info (str "Delete failed: HTTP " (:status del-resp))
+                        {:body (subs (or (:body del-resp) "")
+                                     0 (min 500 (count (or (:body del-resp) ""))))}))))))
+
 (defn reply-comment [post-url message & {:keys [expected-thread]}]
   (let [resp (get-page post-url)]
     (when-not (= 200 (:status resp))
@@ -255,11 +279,23 @@
                       (.selectFirst doc (str "#js-post-" post-id))
                       (throw (ex-info (str "Post " post-id " not found on page") {})))
           author (.attr post-el "data-author")
-          content (or (some-> (.selectFirst post-el ".bbWrapper") (.text)) "")
+          ;; Extract member ID for proper XenForo quote attribution
+          member-id (or (some-> (.selectFirst post-el "a[data-user-id]") (.attr "data-user-id"))
+                        (let [href (some-> (.selectFirst post-el "a.avatar") (.attr "href"))]
+                          (when href (second (re-find #"\.(\d+)/?$" href))))
+                        "")
+          ;; Extract content without nested quote blocks (removes "dijo:" / "Hacer clic para expandir..." artifacts)
+          raw-wrapper (.selectFirst post-el ".bbWrapper")
+          content (when raw-wrapper
+                    (let [clone (.clone raw-wrapper)]
+                      (doseq [el (.select clone ".bbCodeBlock")]
+                        (.remove el))
+                      (extract-content clone)))
           ;; Truncate quoted content if very long
-          quoted (if (> (count content) 500)
-                   (str (subs content 0 500) "...")
-                   content)
+          quoted (let [c (or content "")]
+                   (if (> (count c) 500)
+                     (str (subs c 0 497) "...")
+                     c))
           ;; CSRF token
           csrf (or (extract-csrf (:body resp))
                    (throw (ex-info "No CSRF token on page" {})))
@@ -281,7 +317,9 @@
                           (str thread-base "add-reply")
                           (throw (ex-info "Cannot determine reply URL - thread may be locked" {})))))
           ;; Build BBCode with quote
-          bbcode (str "[QUOTE=\"" author ", post: " post-id "\"]\n"
+          bbcode (str "[QUOTE=\"" author ", post: " post-id
+                      (when (seq member-id) (str ", member: " member-id))
+                      "\"]\n"
                       quoted "\n"
                       "[/QUOTE]\n\n"
                       message)

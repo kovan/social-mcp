@@ -34,7 +34,13 @@
                                          :description "Reply text (BBCode supported)"}
                                :thread_url {:type "string"
                                             :description "Expected thread URL. If provided, the reply will fail if the post does not belong to this thread. Use this to prevent posting to the wrong thread."}}
-                  :required ["post_url" "message"]}}])
+                  :required ["post_url" "message"]}}
+   {:name "delete_post"
+    :description "Delete one of your own posts on burbuja.info."
+    :inputSchema {:type "object"
+                  :properties {:post_url {:type "string"
+                                          :description "URL of the post to delete, e.g. https://www.burbuja.info/inmobiliaria/posts/67890/"}}
+                  :required ["post_url"]}}])
 
 (defn- respond [id result]
   {:jsonrpc "2.0" :id id :result result})
@@ -78,6 +84,9 @@
                    "reply_comment"
                    (forum/reply-comment (:post_url arguments) (:message arguments)
                                         :expected-thread (:thread_url arguments))
+
+                   "delete_post"
+                   (forum/delete-post (:post_url arguments))
 
                    (throw (ex-info (str "Unknown tool: " name) {})))]
       (respond id (tool-result result)))

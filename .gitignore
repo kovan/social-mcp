@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 *.pyo
 ~/.instagram_session.json
+*.session
+*.session-journal

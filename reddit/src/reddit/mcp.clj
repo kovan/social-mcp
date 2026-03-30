@@ -32,13 +32,14 @@
                                :time {:type "string"
                                       :description "Time period: hour, day, week, month, year, all (default day)"}}}}
    {:name "read_thread"
-    :description "Read a Reddit post and its comment thread."
+    :description "Read a Reddit post and its comment thread. Pass either a full Reddit URL or subreddit + post_id."
     :inputSchema {:type "object"
-                  :properties {:subreddit {:type "string"
-                                           :description "Subreddit name without r/ prefix"}
+                  :properties {:url {:type "string"
+                                     :description "Full Reddit post URL (e.g. https://www.reddit.com/r/argentina/comments/1abc23/...)"}
+                               :subreddit {:type "string"
+                                           :description "Subreddit name without r/ prefix (if not using url)"}
                                :post_id {:type "string"
-                                         :description "Post ID (the short alphanumeric ID from the URL, e.g. '1abc23')"}}
-                  :required ["subreddit" "post_id"]}}
+                                         :description "Post ID from the URL (e.g. '1abc23') (if not using url)"}}}}
    {:name "search"
     :description "Search Reddit posts."
     :inputSchema {:type "object"
@@ -149,7 +150,17 @@
               (fmt/format-listing data (str "Top posts - " sub)))
 
             "read_thread"
-            (let [data (api/thread (:subreddit arguments) (:post_id arguments))]
+            (let [url-str (:url arguments)
+                  [subreddit post-id]
+                  (if (seq url-str)
+                    (let [m (re-find #"/r/([^/]+)/comments/([^/?#]+)" url-str)]
+                      (when-not m
+                        (throw (ex-info "Cannot parse subreddit/post_id from URL" {:url url-str})))
+                      [(second m) (nth m 2)])
+                    [(:subreddit arguments) (:post_id arguments)])
+                  _ (when-not (and (seq subreddit) (seq post-id))
+                      (throw (ex-info "Provide either url or subreddit+post_id" {})))
+                  data (web/read-thread subreddit post-id)]
               (fmt/format-thread data))
 
             "search"

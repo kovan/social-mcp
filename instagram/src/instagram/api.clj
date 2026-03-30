@@ -4,7 +4,7 @@
             [clojure.data.json :as json]))
 
 (def ^:private script-path
-  (str (System/getProperty "user.home") "/instagram-mcp/instagram_api.py"))
+  (str (System/getProperty "user.home") "/social-mcp/instagram/instagram_api.py"))
 
 (defn- run-python [cmd args]
   (let [pb (ProcessBuilder. ["python3" script-path cmd (json/write-str args)])

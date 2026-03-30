@@ -193,6 +193,12 @@
                items)))
       "# My recent comments\n\nNo comments found.")))
 
+(defn read-thread
+  "Fetch a thread using authenticated access. Returns raw API data."
+  [subreddit post-id]
+  (let [url (str "https://old.reddit.com/r/" subreddit "/comments/" post-id ".json?raw_json=1")]
+    (api-get url)))
+
 (defn submit-post
   "Submit a new post to a subreddit. kind is 'self' or 'link'."
   [subreddit title kind & {:keys [text url flair-id]}]

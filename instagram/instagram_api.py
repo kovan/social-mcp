@@ -152,6 +152,68 @@ def main():
             save_state(state)
         print(json.dumps({"ok": True, "shortcode": shortcode}))
 
+    elif cmd == "notifications":
+        n = int(args.get("n", 20))
+        items = cl.news_inbox_v1()
+        type_map = {
+            1: "like", 2: "like", 3: "like",
+            12: "follow", 13: "follow",
+            14: "follow_request",
+            66: "comment_like",
+            101: "like", 102: "comment_like",
+            109: "mention",
+            159: "memory",
+            467: "suggestion",
+            834: "comment",
+        }
+
+        def media_pk_to_code(pk):
+            """Convert media PK to Instagram shortcode (no API call needed)."""
+            alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+            code = ''
+            while pk > 0:
+                code = alphabet[pk % 64] + code
+                pk //= 64
+            return code
+
+        results = []
+        all_stories = items.get("new_stories", []) + items.get("old_stories", [])
+        for story in all_stories[:n]:
+            st = story.get("story_type", 0)
+            story_args = story.get("args", {})
+            # Build readable text from the notification
+            text = story_args.get("text", "")
+            if not text:
+                rich_text = story_args.get("rich_text", "")
+                if rich_text:
+                    text = rich_text
+            comment_text = story_args.get("comment_text", "")
+            entry = {
+                "type": type_map.get(st, f"unknown_{st}"),
+                "type_id": st,
+                "timestamp": story_args.get("timestamp"),
+                "text": text,
+                "comment_text": comment_text,
+                "profile_name": story_args.get("profile_name", ""),
+                "profile_id": str(story_args.get("profile_id", "")),
+                "post_url": None,
+            }
+            # Extract post URL from media info
+            media_list = story_args.get("media", [])
+            if media_list and isinstance(media_list, list) and len(media_list) > 0:
+                m = media_list[0]
+                mid = m.get("id", "")
+                if mid:
+                    try:
+                        # media id can be "pk_userid" or just "pk"
+                        pk = int(str(mid).split("_")[0])
+                        code = media_pk_to_code(pk)
+                        entry["post_url"] = f"https://www.instagram.com/p/{code}/"
+                    except (ValueError, TypeError):
+                        pass
+            results.append(entry)
+        print(json.dumps(results))
+
     elif cmd == "follow_user":
         username = args["username"].lstrip("@")
         user_id = cl.user_id_from_username(username)

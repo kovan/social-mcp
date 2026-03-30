@@ -192,7 +192,7 @@
   (respond id {:tools tools}))
 
 (defn- clamp [n default mx]
-  (min (max (or (when n (long n)) default) 1) mx))
+  (min (max (or (when n (Long/parseLong (str n))) default) 1) mx))
 
 (defn- handle-tools-call [id {:keys [name arguments]}]
   (try
