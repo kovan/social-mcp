@@ -80,6 +80,10 @@
     :description "Get notifications/events for the logged-in user. Shows replies to your comments, mentions, etc. Single request instead of scanning individual stories."
     :inputSchema {:type "object"
                   :properties {}}}
+   {:name "mark_answers_read"
+    :description "Clear the answers bell by marking all replies as read."
+    :inputSchema {:type "object"
+                  :properties {}}}
    {:name "set_proxy"
     :description "Set or clear the HTTP proxy for all Pikabu requests. Useful to bypass rate limiting (429). Pass empty string to clear."
     :inputSchema {:type "object"
@@ -168,6 +172,9 @@
 
             "notifications"
             (web/notifications)
+
+            "mark_answers_read"
+            (web/mark-answers-read)
 
             "set_proxy"
             (let [url (str/trim (or (:url arguments) ""))]

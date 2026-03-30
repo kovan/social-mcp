@@ -164,6 +164,16 @@
       (let [msg (or (get-in resp [:data :message]) (:body resp))]
         (throw (ex-info (str "Failed to post comment: " msg) {:response resp}))))))
 
+(defn mark-answers-read
+  "Clear the answers bell by marking all replies as read."
+  []
+  (let [resp (api-post "https://pikabu.ru/ajax/comments_actions.php"
+                       {:action "mark_readed_all"})]
+    (if (get-in resp [:data :result])
+      "All answers marked as read."
+      (let [msg (or (get-in resp [:data :message]) (:body resp))]
+        (throw (ex-info (str "Failed to mark read: " msg) {:response resp}))))))
+
 (defn vote-story
   "Vote on a Pikabu story. direction is 1 (up) or -1 (down)."
   [story-id direction]
