@@ -1,0 +1,27 @@
+{:paths ["src"]
+
+ :deps {org.clojure/clojure        {:mvn/version "1.12.1"}
+        fi.metosin/mcp-toolkit      {:mvn/version "0.1.1-alpha"}
+        metosin/jsonista             {:mvn/version "0.3.13"}
+        funcool/promesa              {:mvn/version "11.0.678"}
+
+        ;; IBKR TWS API — not on Maven Central, install locally:
+        ;; 1. Download from https://interactivebrokers.github.io/
+        ;; 2. Extract TwsApi.jar from the archive
+        ;; 3. Place in lib/TwsApi.jar
+        ;; Or install to local Maven:
+        ;;   mvn install:install-file -Dfile=TwsApi.jar \
+        ;;     -DgroupId=com.interactivebrokers -DartifactId=tws-api \
+        ;;     -Dversion=10.19.01 -Dpackaging=jar
+        ;; Then change the dep to: {:mvn/version "10.19.01"}
+        com.interactivebrokers/tws-api {:local/root "lib/TwsApi.jar"}
+        com.google.protobuf/protobuf-java {:mvn/version "4.29.5"}}
+
+ :aliases
+ {;; clojure -M:run — stdio MCP server
+  :run {:main-opts ["-m" "ibkr-mcp.server"]}
+
+  ;; clojure -X:dev — starts with nREPL for live hacking
+  :dev {:extra-deps {nrepl/nrepl {:mvn/version "1.3.1"}}
+        :exec-fn ibkr-mcp.server/main
+        :exec-args {:nrepl-port 7888}}}}
