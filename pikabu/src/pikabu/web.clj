@@ -110,63 +110,78 @@
   ^Document [^bytes html-bytes ^String base-uri]
   (Jsoup/parse (java.io.ByteArrayInputStream. html-bytes) "windows-1251" base-uri))
 
-(defn- parse-answer-pair
-  "Parse a pair of comment elements [our-comment, reply] into a formatted string."
-  [idx ^Element our-comment ^Element reply]
-  (let [our-nick (when-let [el (.selectFirst our-comment ".user__nick")]
-                   (str/trim (.text el)))
-        reply-nick (when-let [el (.selectFirst reply ".user__nick")]
-                     (str/trim (.text el)))
-        reply-text (when-let [el (.selectFirst reply ".comment__content")]
-                     (str/trim (.text el)))
-        our-text (when-let [el (.selectFirst our-comment ".comment__content")]
-                   (let [t (str/trim (.text el))]
-                     (if (> (count t) 100) (str (subs t 0 100) "...") t)))
-        story-link (.selectFirst reply "a.comment__story-link, a[href*='/story/']")
-        story-url (when story-link (.attr story-link "href"))
-        comment-id (.attr reply "data-id")]
+(defn- parse-answer-html
+  "Parse an answer HTML block (containing our comment + reply) into a formatted string."
+  [idx html-str story-url]
+  (let [doc (Jsoup/parse html-str)
+        comments (.select doc ".comment")
+        nicks (mapv #(when-let [el (.selectFirst ^Element % ".user__nick")]
+                       (str/trim (.text el)))
+                    comments)
+        texts (mapv #(when-let [el (.selectFirst ^Element % ".comment__content")]
+                       (str/trim (.text el)))
+                    comments)
+        reply-id (when (>= (.size comments) 2)
+                   (.attr ^Element (.get comments 1) "data-id"))
+        our-text (first texts)
+        reply-nick (second nicks)
+        reply-text (second texts)
+        our-text-short (when (seq our-text)
+                         (if (> (count our-text) 100)
+                           (str (subs our-text 0 100) "...")
+                           our-text))]
     (str (inc idx) ". **" (or reply-nick "?") "** replied to you"
          (when story-url (str " on " story-url))
-         "\n   reply_id=" comment-id
-         "\n   > " (or (when (seq our-text) our-text) "[your comment]")
+         "\n   reply_id=" (or reply-id "?")
+         "\n   > " (or our-text-short "[your comment]")
          "\n   " (or reply-text "[reply text]"))))
 
 (defn notifications
-  "Fetch replies to our comments from /answers page (single authenticated request).
-   Optional page parameter for pagination (default 1)."
+  "Fetch replies to our comments via /answers endpoint.
+   Page 1: GET /answers (HTML, includes bell count).
+   Page 2+: POST /answers with page param (JSON API, supports infinite scroll)."
   [& {:keys [page] :or {page 1}}]
-  (let [url (if (> page 1)
-              (str "https://pikabu.ru/answers?page=" page)
-              "https://pikabu.ru/answers")
-        {:keys [bytes status]} (api-get url)]
-    (when (not= status 200)
-      (throw (ex-info (str "HTTP " status " from Pikabu (rate-limited? try again later)") {})))
-    (let [doc (parse-html-bytes bytes url)
-          ;; Select top-level comment containers (the answer pairs)
-          containers (.select doc ".page-answers .comments")
-          bell (.selectFirst doc ".bell[data-role=answers]")
-          unread-count (when bell (str/trim (.text bell)))]
-      ;; Each container has exactly 2 .comment elements: ours + reply
-      (let [pairs (for [^Element container containers
-                        :let [comments (.select container "> .comment, .comment")]
-                        :when (>= (.size comments) 2)]
-                    [(.get comments 0) (.get comments 1)])
-            pairs (if (seq pairs) pairs
-                    ;; Fallback: old behavior - partition all comments by 2
-                    (let [all-comments (.select doc ".comment[data-id]")]
-                      (partition 2 all-comments)))]
+  (if (= page 1)
+    ;; Page 1: GET HTML (includes bell count)
+    (let [{:keys [bytes status]} (api-get "https://pikabu.ru/answers")]
+      (when (not= status 200)
+        (throw (ex-info (str "HTTP " status " from Pikabu (rate-limited? try again later)") {})))
+      (let [doc (parse-html-bytes bytes "https://pikabu.ru/answers")
+            bell (.selectFirst doc ".bell[data-role=answers]")
+            unread-count (when bell (str/trim (.text bell)))
+            containers (.select doc ".comments[data-story-url]")
+            pairs (for [^Element c containers]
+                    {:html (.outerHtml c)
+                     :story-url (.attr c "data-story-url")})]
         (if (empty? pairs)
-          (str "No replies found." (when unread-count (str " (Bell shows: " unread-count ")"))
-               (when (> page 1) (str " (page " page " may be empty)")))
+          (str "No replies found." (when unread-count (str " (Bell shows: " unread-count ")")))
           (let [formatted (map-indexed
-                            (fn [i [our-comment reply]]
-                              (parse-answer-pair i our-comment reply))
+                            (fn [i {:keys [html story-url]}]
+                              (parse-answer-html i html story-url))
                             pairs)]
             (str "# Replies (" (count pairs) " answers"
                  (when unread-count (str ", bell: " unread-count))
-                 (when (> page 1) (str ", page " page))
                  ")\n\n"
-                 (str/join "\n\n---\n\n" formatted))))))))
+                 (str/join "\n\n---\n\n" formatted))))))
+    ;; Page 2+: POST JSON API (infinite scroll)
+    (let [resp (api-post "https://pikabu.ru/answers"
+                         {:page page :twitmode 1 :of "v2"})]
+      (if-not (get-in resp [:data :result])
+        (throw (ex-info (str "Answers API error: " (get-in resp [:data :message])) {}))
+        (let [comments (get-in resp [:data :data :comments])
+              has-more (get-in resp [:data :data :has_more])]
+          (if (empty? comments)
+            (str "No more replies (page " page ").")
+            (let [formatted (map-indexed
+                              (fn [i item]
+                                (let [html (or (:html item) "")
+                                      story-url (second (re-find #"data-story-url=\"([^\"]+)\"" html))]
+                                  (parse-answer-html i html story-url)))
+                              comments)]
+              (str "# Replies (" (count comments) " answers, page " page
+                   (when has-more ", has_more")
+                   ")\n\n"
+                   (str/join "\n\n---\n\n" formatted)))))))))
 
 (defn post-comment
   "Post a comment on a Pikabu story."
