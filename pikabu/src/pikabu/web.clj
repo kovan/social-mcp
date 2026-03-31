@@ -143,10 +143,14 @@
          :base-id nil}))
 
 (defn- extract-csrf-token
-  "Extract csrfToken from page HTML initParams JSON."
-  [^String html]
-  (when-let [m (re-find #"\"csrfToken\":\"([a-f0-9]+)\"" html)]
-    (second m)))
+  "Extract csrfToken from <script data-entry='initParams'> JSON block."
+  [^Document doc]
+  (when-let [script (.selectFirst doc "script[data-entry=initParams]")]
+    (let [json-str (.data script)]
+      (try
+        (let [data (json/read-str json-str :key-fn keyword)]
+          (:csrfToken data))
+        (catch Exception _ nil)))))
 
 (defn- extract-entry-ids
   "Extract internal answer entry IDs from answer containers for exclude_ids."
@@ -197,11 +201,10 @@
     (let [{:keys [bytes status]} (api-get "https://pikabu.ru/answers")]
       (when (not= status 200)
         (throw (ex-info (str "HTTP " status " from Pikabu (rate-limited? try again later)") {})))
-      (let [html-str (String. ^bytes bytes "windows-1251")
-            doc (Jsoup/parse html-str "https://pikabu.ru/answers")
+      (let [doc (parse-html-bytes bytes "https://pikabu.ru/answers")
             bell (.selectFirst doc ".bell[data-role=answers]")
             unread-count (when bell (str/trim (.text bell)))
-            csrf (extract-csrf-token html-str)
+            csrf (extract-csrf-token doc)
             entry-ids (extract-entry-ids doc)
             containers (.select doc ".comments[data-story-url]")
             ;; Find base_id: oldest data-comment-id
