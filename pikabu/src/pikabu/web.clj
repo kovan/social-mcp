@@ -227,35 +227,41 @@
                  (when unread-count (str ", bell: " unread-count))
                  ")\n\n"
                  (str/join "\n\n---\n\n" formatted))))))
-    ;; Page 2+: POST /answers with exclude_ids (comment IDs) + base_id + CSRF
-    (let [{:keys [csrf-token exclude-ids base-id]} @answers-state]
-      (when-not csrf-token
-        (throw (ex-info "Call notifications page 1 first to get CSRF token" {})))
-      (let [resp (api-post "https://pikabu.ru/answers"
-                   {:base_id (or base-id "0")
-                    :exclude_ids (str/join "," exclude-ids)})]
-        (if-not (get-in resp [:data :result])
-          (throw (ex-info (str "Answers API error: " (or (get-in resp [:data :message]) (:body resp))) {}))
-          (let [comments (get-in resp [:data :data :comments])
-                has-more (get-in resp [:data :data :has_more])
-                ;; Update state: add new comment IDs to exclude list
-                new-ids (mapv #(str (:id %)) comments)
-                ;; Update base_id to oldest in this batch
-                new-base (when (seq comments) (str (:id (last comments))))]
+    ;; Page 2+: GET /answers with exclude_ids + base_id as query params
+    ;; DDoS-Guard blocks POST to /answers from curl, but GET works
+    (let [{:keys [exclude-ids base-id]} @answers-state]
+      (when (empty? exclude-ids)
+        (throw (ex-info "Call notifications page 1 first" {})))
+      (let [params (str "?base_id=" (or base-id "0")
+                        "&exclude_ids=" (str/join "," exclude-ids))
+            {:keys [bytes status]} (api-get (str "https://pikabu.ru/answers" params))]
+        (if (not= status 200)
+          (throw (ex-info (str "HTTP " status " from /answers pagination") {}))
+          (let [doc (parse-html-bytes bytes (str "https://pikabu.ru/answers" params))
+                containers (.select doc ".comments[data-story-url]")
+                pairs (for [^Element c containers]
+                        {:html (.outerHtml c)
+                         :story-url (.attr c "data-story-url")
+                         :comment-id (.attr c "data-comment-id")})
+                new-ids (mapv :comment-id pairs)
+                new-base (when (seq pairs) (:comment-id (last pairs)))]
             (swap! answers-state update :exclude-ids into new-ids)
             (when new-base (swap! answers-state assoc :base-id new-base))
-            (if (empty? comments)
+            (if (empty? pairs)
               (str "No more replies (page " page ").")
               (let [formatted (map-indexed
-                                (fn [i item]
-                                  (let [html (or (:html item) "")
-                                        story-url (second (re-find #"data-story-url=\"([^\"]+)\"" html))]
-                                    (parse-answer-html i html story-url)))
-                                comments)]
-                (str "# Replies (" (count comments) " answers, page " page
-                     (when has-more ", has_more")
-                     ")\n\n"
-                     (str/join "\n\n---\n\n" formatted))))))))))
+                                (fn [i {:keys [html story-url]}]
+                                  (parse-answer-html i html story-url))
+                                pairs)]
+                (str "# Replies (" (count pairs) " answers, page " page ")
+
+"
+                     (str/join "
+
+---
+
+" formatted))))))))))
+
 
 (defn post-comment
   "Post a comment on a Pikabu story."
