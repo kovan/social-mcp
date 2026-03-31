@@ -40,7 +40,15 @@
     :inputSchema {:type "object"
                   :properties {:post_url {:type "string"
                                           :description "URL of the post to delete, e.g. https://www.burbuja.info/inmobiliaria/posts/67890/"}}
-                  :required ["post_url"]}}])
+                  :required ["post_url"]}}
+   {:name "user_posts"
+    :description "Search for recent posts by a specific burbuja.info username. Returns post titles, snippets, dates, and URLs."
+    :inputSchema {:type "object"
+                  :properties {:username {:type "string"
+                                          :description "The burbuja.info username to search for"}
+                               :max_results {:type "number"
+                                             :description "Maximum number of results to return (default 20)"}}
+                  :required ["username"]}}])
 
 (defn- respond [id result]
   {:jsonrpc "2.0" :id id :result result})
@@ -87,6 +95,12 @@
 
                    "delete_post"
                    (forum/delete-post (:post_url arguments))
+
+                   "user_posts"
+                   (let [max-r (when-let [m (:max_results arguments)]
+                                 (int (if (string? m) (parse-long m) m)))]
+                     (forum/user-posts (:username arguments)
+                                       :max-results (or max-r 20)))
 
                    (throw (ex-info (str "Unknown tool: " name) {})))]
       (respond id (tool-result result)))

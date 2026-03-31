@@ -227,7 +227,8 @@
                  (when unread-count (str ", bell: " unread-count))
                  ")\n\n"
                  (str/join "\n\n---\n\n" formatted))))))
-    ;; Page 2+: POST /answers with browser-matching headers to bypass DDoS-Guard
+    ;; Page 2+: POST /answers with full browser headers
+    ;; Works when DDoS-Guard session is properly established (e.g., via WARP + fresh cookies)
     (let [{:keys [csrf-token exclude-ids base-id]} @answers-state]
       (when (empty? exclude-ids)
         (throw (ex-info "Call notifications page 1 first" {})))
@@ -254,9 +255,9 @@
             proc (.start pb)
             status-str (str/trim (slurp (.getInputStream proc)))
             _ (.waitFor proc)
-            body (slurp body-file)
+            output (slurp body-file)
             status (or (parse-long status-str) 0)
-            data (try (json/read-str body :key-fn keyword) (catch Exception _ nil))]
+            data (try (json/read-str output :key-fn keyword) (catch Exception _ nil))]
         (.delete body-file)
         (if (and data (:result data))
           ;; JSON response - pagination worked
@@ -277,8 +278,8 @@
                 (str "# Replies (" (count comments) " answers, page " page
                      (when has-more ", has_more") ")\n\n"
                      (str/join "\n\n---\n\n" formatted)))))
-          ;; HTML response (DDoS-Guard blocked) - fall back to parsing HTML
-          (let [doc (parse-html-bytes (.getBytes (or body "") "UTF-8") "https://pikabu.ru/answers")
+          ;; Playwright failed or returned non-JSON - fall back to error
+          (let [doc (parse-html-bytes (.getBytes (or output "") "UTF-8") "https://pikabu.ru/answers")
                 containers (.select doc ".comments[data-story-url]")
                 pairs (for [^Element c containers]
                         {:html (.outerHtml c)

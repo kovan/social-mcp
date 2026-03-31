@@ -256,6 +256,75 @@
                         {:body (subs (or (:body del-resp) "")
                                      0 (min 500 (count (or (:body del-resp) ""))))}))))))
 
+(defn- resolve-user-id
+  "Look up a burbuja.info user ID from their username."
+  [username]
+  (let [url (str "https://www.burbuja.info/inmobiliaria/members/?username="
+                 (URLEncoder/encode username "UTF-8"))
+        resp (get-page url)]
+    (when (= 200 (:status resp))
+      (let [doc (Jsoup/parse ^String (:body resp))
+            member-link (some->> (.select doc "a[href*=/members/]")
+                                 (map #(.attr ^Element % "href"))
+                                 (filter #(re-find #"\.\d+/" %))
+                                 first)]
+        (when member-link
+          (second (re-find #"\.(\d+)/?" member-link)))))))
+
+(defn- parse-search-item [^Element item]
+  (let [title-link (or (.selectFirst item "a[href*=/temas/]")
+                       (.selectFirst item "h3 a")
+                       (.selectFirst item ".contentRow-title a"))
+        title (when title-link (str/trim (.text title-link)))
+        thread-url (when title-link
+                     (let [href (.attr title-link "href")]
+                       (if (str/starts-with? href "http")
+                         href
+                         (str "https://www.burbuja.info" href))))
+        snippet-el (.selectFirst item ".contentRow-snippet")
+        snippet (when snippet-el (str/trim (.text snippet-el)))
+        minor-el (.selectFirst item ".contentRow-minor")
+        meta-text (when minor-el (str/trim (.text minor-el)))
+        time-el (.selectFirst item "time")
+        date (when time-el
+               (or (not-empty (.attr time-el "datetime"))
+                   (.text time-el)))]
+    (when (or title snippet)
+      {:title (or title "")
+       :url (or thread-url "")
+       :snippet (or snippet "")
+       :date (or date "")
+       :meta (or meta-text "")})))
+
+(defn user-posts
+  "Fetch recent posts by a specific username via their member profile."
+  [username & {:keys [max-results] :or {max-results 20}}]
+  (let [user-id (resolve-user-id username)]
+    (when-not user-id
+      (throw (ex-info (str "User not found: " username) {})))
+    (let [url (str "https://www.burbuja.info/inmobiliaria/search/member?user_id=" user-id)
+          resp (get-page url)]
+      (when-not (= 200 (:status resp))
+        (throw (ex-info (str "HTTP " (:status resp) " fetching user posts") {})))
+      (let [doc (Jsoup/parse ^String (:body resp))
+            items (.select doc "li.block-row")
+            posts (->> items
+                       (map parse-search-item)
+                       (filter some?)
+                       (take max-results))]
+        (if (seq posts)
+          (str "# Posts by " username " (" (count posts) " results)\n\n"
+               (str/join "\n\n---\n\n"
+                 (map-indexed
+                   (fn [i {:keys [title url snippet date meta]}]
+                     (str (inc i) ". **" title "**"
+                          (when (seq date) (str " (" date ")"))
+                          (when (seq url) (str "\n   " url))
+                          (when (seq snippet) (str "\n   " snippet))
+                          (when (seq meta) (str "\n   " meta))))
+                   posts)))
+          (str "# Posts by " username "\n\nNo posts found."))))))
+
 (defn reply-comment [post-url message & {:keys [expected-thread]}]
   (let [resp (get-page post-url)]
     (when-not (= 200 (:status resp))
