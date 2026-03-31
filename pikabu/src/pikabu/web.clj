@@ -227,11 +227,11 @@
                  (when unread-count (str ", bell: " unread-count))
                  ")\n\n"
                  (str/join "\n\n---\n\n" formatted))))))
-    ;; Page 2+: POST /answers/comments with CSRF (real infinite scroll)
+    ;; Page 2+: POST /answers with exclude_ids (comment IDs) + base_id + CSRF
     (let [{:keys [csrf-token exclude-ids base-id]} @answers-state]
       (when-not csrf-token
         (throw (ex-info "Call notifications page 1 first to get CSRF token" {})))
-      (let [resp (api-post-with-csrf "https://pikabu.ru/answers/comments"
+      (let [resp (api-post-with-csrf "https://pikabu.ru/answers"
                    {:base_id (or base-id "0")
                     :exclude_ids (str/join "," exclude-ids)}
                    csrf-token)]
@@ -239,9 +239,12 @@
           (throw (ex-info (str "Answers API error: " (or (get-in resp [:data :message]) (:body resp))) {}))
           (let [comments (get-in resp [:data :data :comments])
                 has-more (get-in resp [:data :data :has_more])
-                ;; Update state: add new entry IDs to exclude list
-                new-ids (mapv #(str (:id %)) comments)]
+                ;; Update state: add new comment IDs to exclude list
+                new-ids (mapv #(str (:id %)) comments)
+                ;; Update base_id to oldest in this batch
+                new-base (when (seq comments) (str (:id (last comments))))]
             (swap! answers-state update :exclude-ids into new-ids)
+            (when new-base (swap! answers-state assoc :base-id new-base))
             (if (empty? comments)
               (str "No more replies (page " page ").")
               (let [formatted (map-indexed
