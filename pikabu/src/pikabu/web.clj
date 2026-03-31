@@ -227,17 +227,58 @@
                  (when unread-count (str ", bell: " unread-count))
                  ")\n\n"
                  (str/join "\n\n---\n\n" formatted))))))
-    ;; Page 2+: GET /answers with exclude_ids + base_id as query params
-    ;; DDoS-Guard blocks POST to /answers from curl, but GET works
-    (let [{:keys [exclude-ids base-id]} @answers-state]
+    ;; Page 2+: POST /answers with browser-matching headers to bypass DDoS-Guard
+    (let [{:keys [csrf-token exclude-ids base-id]} @answers-state]
       (when (empty? exclude-ids)
         (throw (ex-info "Call notifications page 1 first" {})))
-      (let [params (str "?base_id=" (or base-id "0")
-                        "&exclude_ids=" (str/join "," exclude-ids))
-            {:keys [bytes status]} (api-get (str "https://pikabu.ru/answers" params))]
-        (if (not= status 200)
-          (throw (ex-info (str "HTTP " status " from /answers pagination") {}))
-          (let [doc (parse-html-bytes bytes (str "https://pikabu.ru/answers" params))
+      (ensure-session!)
+      (let [form-data (str "exclude_ids=" (URLEncoder/encode (str/join "," exclude-ids) "UTF-8")
+                           "&base_id=" (URLEncoder/encode (or base-id "0") "UTF-8"))
+            body-file (java.io.File/createTempFile "pikabu-answers" ".json")
+            args (px/curl-args ["-sSL"
+                  "-b" @cookie-jar "-c" @cookie-jar
+                  "-H" (str "User-Agent: " ua)
+                  "-H" "Accept: application/json, text/javascript, */*; q=0.01"
+                  "-H" "Content-Type: application/x-www-form-urlencoded; charset=UTF-8"
+                  "-H" "X-Requested-With: XMLHttpRequest"
+                  "-H" "Origin: https://pikabu.ru"
+                  "-H" "Referer: https://pikabu.ru/answers"
+                  "-H" (str "X-Csrf-Token: " (or csrf-token ""))
+                  "-H" "X-Timezone-Offset: 120"
+                  "-X" "POST"
+                  "-d" form-data
+                  "-o" (.getAbsolutePath body-file)
+                  "-w" "%{http_code}"
+                  "https://pikabu.ru/answers"])
+            pb (ProcessBuilder. ^java.util.List args)
+            proc (.start pb)
+            status-str (str/trim (slurp (.getInputStream proc)))
+            _ (.waitFor proc)
+            body (slurp body-file)
+            status (or (parse-long status-str) 0)
+            data (try (json/read-str body :key-fn keyword) (catch Exception _ nil))]
+        (.delete body-file)
+        (if (and data (:result data))
+          ;; JSON response - pagination worked
+          (let [comments (get-in data [:data :comments])
+                has-more (get-in data [:data :has_more])
+                new-ids (mapv #(str (:id %)) comments)
+                new-base (when (seq comments) (str (:id (last comments))))]
+            (swap! answers-state update :exclude-ids into new-ids)
+            (when new-base (swap! answers-state assoc :base-id new-base))
+            (if (empty? comments)
+              (str "No more replies (page " page ").")
+              (let [formatted (map-indexed
+                                (fn [i item]
+                                  (let [html (or (:html item) "")
+                                        story-url (second (re-find #"data-story-url=\"([^\"]+)\"" html))]
+                                    (parse-answer-html i html story-url)))
+                                comments)]
+                (str "# Replies (" (count comments) " answers, page " page
+                     (when has-more ", has_more") ")\n\n"
+                     (str/join "\n\n---\n\n" formatted)))))
+          ;; HTML response (DDoS-Guard blocked) - fall back to parsing HTML
+          (let [doc (parse-html-bytes (.getBytes (or body "") "UTF-8") "https://pikabu.ru/answers")
                 containers (.select doc ".comments[data-story-url]")
                 pairs (for [^Element c containers]
                         {:html (.outerHtml c)
@@ -248,20 +289,13 @@
             (swap! answers-state update :exclude-ids into new-ids)
             (when new-base (swap! answers-state assoc :base-id new-base))
             (if (empty? pairs)
-              (str "No more replies (page " page ").")
+              (str "No more replies (page " page "). DDoS-Guard may have blocked pagination.")
               (let [formatted (map-indexed
                                 (fn [i {:keys [html story-url]}]
                                   (parse-answer-html i html story-url))
                                 pairs)]
-                (str "# Replies (" (count pairs) " answers, page " page ")
-
-"
-                     (str/join "
-
----
-
-" formatted))))))))))
-
+                (str "# Replies (" (count pairs) " answers, page " page ")\n\n"
+                     (str/join "\n\n---\n\n" formatted))))))))))
 
 (defn post-comment
   "Post a comment on a Pikabu story."
