@@ -170,9 +170,7 @@
               "-H" "X-Requested-With: XMLHttpRequest"
               "-H" "Accept: application/json"
               "-H" (str "X-Csrf-Token: " csrf-token)
-              "-H" (str "X-Timezone-Offset: " (- (.getOffset (java.time.ZoneOffset/systemDefault)
-                                                              (java.time.Instant/now))
-                                                  -60))
+              "-H" "X-Timezone-Offset: 120"
               "-H" "Referer: https://pikabu.ru/answers"
               "-X" "POST"
               "-d" form-data
