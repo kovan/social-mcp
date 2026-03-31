@@ -136,23 +136,86 @@
          "\n   > " (or our-text-short "[your comment]")
          "\n   " (or reply-text "[reply text]"))))
 
+;; State for cursor-based pagination of /answers
+(def ^:private answers-state
+  (atom {:csrf-token nil
+         :exclude-ids []
+         :base-id nil}))
+
+(defn- extract-csrf-token
+  "Extract csrfToken from page HTML initParams JSON."
+  [^String html]
+  (when-let [m (re-find #"\"csrfToken\":\"([a-f0-9]+)\"" html)]
+    (second m)))
+
+(defn- extract-entry-ids
+  "Extract internal answer entry IDs from answer containers for exclude_ids."
+  [^Document doc]
+  (let [containers (.select doc ".comments[data-comment-id]")]
+    (mapv #(.attr ^Element % "data-comment-id") containers)))
+
+(defn- api-post-with-csrf
+  "POST with CSRF token and custom headers for /answers/comments."
+  [url form-params csrf-token]
+  (ensure-session!)
+  (let [body-file (java.io.File/createTempFile "pikabu-resp" ".json")
+        form-data (str/join "&"
+                    (map (fn [[k v]]
+                           (str (URLEncoder/encode (name k) "UTF-8") "="
+                                (URLEncoder/encode (str v) "UTF-8")))
+                         form-params))
+        args (px/curl-args ["-sSL"
+              "-b" @cookie-jar "-c" @cookie-jar
+              "-H" (str "User-Agent: " ua)
+              "-H" "X-Requested-With: XMLHttpRequest"
+              "-H" "Accept: application/json"
+              "-H" (str "X-Csrf-Token: " csrf-token)
+              "-H" (str "X-Timezone-Offset: " (- (.getOffset (java.time.ZoneOffset/systemDefault)
+                                                              (java.time.Instant/now))
+                                                  -60))
+              "-H" "Referer: https://pikabu.ru/answers"
+              "-X" "POST"
+              "-d" form-data
+              "-o" (.getAbsolutePath body-file)
+              "-w" "%{http_code}"
+              url])
+        pb (ProcessBuilder. ^java.util.List args)
+        proc (.start pb)
+        status-str (str/trim (slurp (.getInputStream proc)))
+        _ (.waitFor proc)
+        body (slurp body-file)]
+    (.delete body-file)
+    {:status (or (parse-long status-str) 0)
+     :body body
+     :data (try (json/read-str body :key-fn keyword) (catch Exception _ nil))}))
+
 (defn notifications
   "Fetch replies to our comments via /answers endpoint.
-   Page 1: GET /answers (HTML, includes bell count).
-   Page 2+: POST /answers with page param (JSON API, supports infinite scroll)."
+   Page 1: GET /answers (HTML, extracts CSRF + entry IDs for pagination).
+   Page 2+: POST /answers/comments with CSRF, base_id, exclude_ids (real infinite scroll)."
   [& {:keys [page] :or {page 1}}]
   (if (= page 1)
-    ;; Page 1: GET HTML (includes bell count)
+    ;; Page 1: GET HTML (includes bell count, CSRF token, entry IDs)
     (let [{:keys [bytes status]} (api-get "https://pikabu.ru/answers")]
       (when (not= status 200)
         (throw (ex-info (str "HTTP " status " from Pikabu (rate-limited? try again later)") {})))
-      (let [doc (parse-html-bytes bytes "https://pikabu.ru/answers")
+      (let [html-str (String. ^bytes bytes "windows-1251")
+            doc (Jsoup/parse html-str "https://pikabu.ru/answers")
             bell (.selectFirst doc ".bell[data-role=answers]")
             unread-count (when bell (str/trim (.text bell)))
+            csrf (extract-csrf-token html-str)
+            entry-ids (extract-entry-ids doc)
             containers (.select doc ".comments[data-story-url]")
+            ;; Find base_id: oldest data-comment-id
+            base-id (when (seq containers)
+                      (.attr ^Element (.last containers) "data-comment-id"))
             pairs (for [^Element c containers]
                     {:html (.outerHtml c)
                      :story-url (.attr c "data-story-url")})]
+        ;; Save state for pagination
+        (reset! answers-state {:csrf-token csrf
+                               :exclude-ids entry-ids
+                               :base-id base-id})
         (if (empty? pairs)
           (str "No replies found." (when unread-count (str " (Bell shows: " unread-count ")")))
           (let [formatted (map-indexed
@@ -163,25 +226,33 @@
                  (when unread-count (str ", bell: " unread-count))
                  ")\n\n"
                  (str/join "\n\n---\n\n" formatted))))))
-    ;; Page 2+: POST JSON API (infinite scroll)
-    (let [resp (api-post "https://pikabu.ru/answers"
-                         {:page page :twitmode 1 :of "v2"})]
-      (if-not (get-in resp [:data :result])
-        (throw (ex-info (str "Answers API error: " (get-in resp [:data :message])) {}))
-        (let [comments (get-in resp [:data :data :comments])
-              has-more (get-in resp [:data :data :has_more])]
-          (if (empty? comments)
-            (str "No more replies (page " page ").")
-            (let [formatted (map-indexed
-                              (fn [i item]
-                                (let [html (or (:html item) "")
-                                      story-url (second (re-find #"data-story-url=\"([^\"]+)\"" html))]
-                                  (parse-answer-html i html story-url)))
-                              comments)]
-              (str "# Replies (" (count comments) " answers, page " page
-                   (when has-more ", has_more")
-                   ")\n\n"
-                   (str/join "\n\n---\n\n" formatted)))))))))
+    ;; Page 2+: POST /answers/comments with CSRF (real infinite scroll)
+    (let [{:keys [csrf-token exclude-ids base-id]} @answers-state]
+      (when-not csrf-token
+        (throw (ex-info "Call notifications page 1 first to get CSRF token" {})))
+      (let [resp (api-post-with-csrf "https://pikabu.ru/answers/comments"
+                   {:base_id (or base-id "0")
+                    :exclude_ids (str/join "," exclude-ids)}
+                   csrf-token)]
+        (if-not (get-in resp [:data :result])
+          (throw (ex-info (str "Answers API error: " (or (get-in resp [:data :message]) (:body resp))) {}))
+          (let [comments (get-in resp [:data :data :comments])
+                has-more (get-in resp [:data :data :has_more])
+                ;; Update state: add new entry IDs to exclude list
+                new-ids (mapv #(str (:id %)) comments)]
+            (swap! answers-state update :exclude-ids into new-ids)
+            (if (empty? comments)
+              (str "No more replies (page " page ").")
+              (let [formatted (map-indexed
+                                (fn [i item]
+                                  (let [html (or (:html item) "")
+                                        story-url (second (re-find #"data-story-url=\"([^\"]+)\"" html))]
+                                    (parse-answer-html i html story-url)))
+                                comments)]
+                (str "# Replies (" (count comments) " answers, page " page
+                     (when has-more ", has_more")
+                     ")\n\n"
+                     (str/join "\n\n---\n\n" formatted))))))))))
 
 (defn post-comment
   "Post a comment on a Pikabu story."
