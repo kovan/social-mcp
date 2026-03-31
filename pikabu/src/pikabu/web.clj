@@ -231,10 +231,9 @@
     (let [{:keys [csrf-token exclude-ids base-id]} @answers-state]
       (when-not csrf-token
         (throw (ex-info "Call notifications page 1 first to get CSRF token" {})))
-      (let [resp (api-post-with-csrf "https://pikabu.ru/answers"
+      (let [resp (api-post "https://pikabu.ru/answers"
                    {:base_id (or base-id "0")
-                    :exclude_ids (str/join "," exclude-ids)}
-                   csrf-token)]
+                    :exclude_ids (str/join "," exclude-ids)})]
         (if-not (get-in resp [:data :result])
           (throw (ex-info (str "Answers API error: " (or (get-in resp [:data :message]) (:body resp))) {}))
           (let [comments (get-in resp [:data :data :comments])
