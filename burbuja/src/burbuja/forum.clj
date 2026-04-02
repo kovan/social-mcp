@@ -1,6 +1,7 @@
 (ns burbuja.forum
   (:require [clojure.string :as str]
             [clojure.java.io :as io]
+            [clojure.data.json :as json]
             [burbuja.cookies :as chrome])
   (:import [org.jsoup Jsoup]
            [org.jsoup.nodes Element]
@@ -324,6 +325,55 @@
                           (when (seq meta) (str "\n   " meta))))
                    posts)))
           (str "# Posts by " username "\n\nNo posts found."))))))
+
+(defn create-thread [forum-url title message]
+  (let [base-url (str/replace forum-url #"/+$" "")
+        form-url (str base-url "/post-thread")
+        ;; Fetch the post-thread form page to get the CSRF token
+        resp (get-page form-url)]
+    (when-not (= 200 (:status resp))
+      (throw (ex-info (str "HTTP " (:status resp) " fetching thread creation page") {:url form-url})))
+    (let [doc (Jsoup/parse ^String (:body resp))
+          csrf (or (extract-csrf (:body resp))
+                   (throw (ex-info "No CSRF token on page - are you logged in?" {})))
+          ;; Find the form action URL on the post-thread page
+          thread-form (or (.selectFirst doc "form[action*=post-thread]")
+                          (.selectFirst doc "form.block"))
+          post-url (if thread-form
+                     (let [action (.attr thread-form "action")]
+                       (if (or (str/blank? action) (= action "#"))
+                         form-url
+                         (if (str/starts-with? action "http")
+                           action
+                           (str "https://www.burbuja.info" action))))
+                     form-url)
+          ;; POST the new thread
+          create-resp (post-form post-url
+                        {"title" title
+                         "message" message
+                         "_xfToken" csrf
+                         "_xfRequestUri" base-url
+                         "_xfNoRedirect" "1"
+                         "_xfResponseType" "json"}
+                        :ajax? true)]
+      (if (<= 200 (:status create-resp) 303)
+        ;; Try to extract the redirect URL from the JSON response
+        (let [body (:body create-resp)
+              redirect (try
+                         (when (seq body)
+                           (let [parsed (json/read-str body :key-fn keyword)]
+                             (or (:redirect parsed)
+                                 (get-in parsed [:visitor :_redirectTarget]))))
+                         (catch Exception _ nil))]
+          (if redirect
+            (str "Thread created successfully.\nURL: "
+                 (if (str/starts-with? redirect "http")
+                   redirect
+                   (str "https://www.burbuja.info" redirect)))
+            (str "Thread created successfully.")))
+        (throw (ex-info (str "Thread creation failed: HTTP " (:status create-resp))
+                        {:body (subs (or (:body create-resp) "")
+                                     0 (min 500 (count (or (:body create-resp) ""))))}))))))
 
 (defn reply-comment [post-url message & {:keys [expected-thread]}]
   (let [resp (get-page post-url)]

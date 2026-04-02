@@ -35,6 +35,16 @@
                                :thread_url {:type "string"
                                             :description "Expected thread URL. If provided, the reply will fail if the post does not belong to this thread. Use this to prevent posting to the wrong thread."}}
                   :required ["post_url" "message"]}}
+   {:name "create_thread"
+    :description "Create a new thread on burbuja.info in a specific forum/subforum."
+    :inputSchema {:type "object"
+                  :properties {:forum_url {:type "string"
+                                           :description "URL of the forum to post in, e.g. https://www.burbuja.info/inmobiliaria/bolsa-e-inversiones/ or https://www.burbuja.info/inmobiliaria/foro-de-economia/"}
+                               :title {:type "string"
+                                       :description "Thread title"}
+                               :message {:type "string"
+                                         :description "Thread body text (BBCode supported)"}}
+                  :required ["forum_url" "title" "message"]}}
    {:name "delete_post"
     :description "Delete one of your own posts on burbuja.info."
     :inputSchema {:type "object"
@@ -92,6 +102,9 @@
                    "reply_comment"
                    (forum/reply-comment (:post_url arguments) (:message arguments)
                                         :expected-thread (:thread_url arguments))
+
+                   "create_thread"
+                   (forum/create-thread (:forum_url arguments) (:title arguments) (:message arguments))
 
                    "delete_post"
                    (forum/delete-post (:post_url arguments))
