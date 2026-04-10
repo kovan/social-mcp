@@ -5,13 +5,25 @@
 
 (def ^:private user-data (atom nil))
 
-(defn- extract-voc-uid []
-  (let [script (str "import browser_cookie3, json\n"
-                    "cj = browser_cookie3.chrome(domain_name='.elcorreo.com')\n"
-                    "for c in cj:\n"
-                    "    if c.name == 'voc_uid':\n"
-                    "        print(c.value)\n"
-                    "        break\n")
+(defn- cookie-value-script
+  [cookie-name]
+  (str "import browser_cookie3, json\n"
+       "orig_get_password = browser_cookie3._LinuxPasswordManager.get_password\n"
+       "def patched_get_password(self, os_crypt_name):\n"
+       "    try:\n"
+       "        return orig_get_password(self, os_crypt_name)\n"
+       "    except Exception:\n"
+       "        return browser_cookie3.CHROMIUM_DEFAULT_PASSWORD\n"
+       "browser_cookie3._LinuxPasswordManager.get_password = patched_get_password\n"
+       "cj = browser_cookie3.chrome(domain_name='.elcorreo.com')\n"
+       "for c in cj:\n"
+       "    if c.name == " (pr-str cookie-name) ":\n"
+       "        print(c.value)\n"
+       "        break\n"))
+
+(defn- extract-cookie-value
+  [cookie-name]
+  (let [script (cookie-value-script cookie-name)
         pb (ProcessBuilder. ["python3" "-c" script])
         proc (.start pb)
         out (str/trim (slurp (.getInputStream proc)))
@@ -19,20 +31,15 @@
         exit (.waitFor proc)]
     (when-not (zero? exit)
       (throw (ex-info (str "Cookie extraction failed: " err) {:exit exit})))
+    out))
+
+(defn- extract-voc-uid []
+  (let [out (extract-cookie-value "voc_uid")]
     (when (seq out)
       (json/read-str out :key-fn keyword))))
 
 (defn- extract-user-info []
-  (let [script (str "import browser_cookie3, json\n"
-                    "cj = browser_cookie3.chrome(domain_name='.elcorreo.com')\n"
-                    "for c in cj:\n"
-                    "    if c.name == 'vocuser_information':\n"
-                    "        print(c.value)\n"
-                    "        break\n")
-        pb (ProcessBuilder. ["python3" "-c" script])
-        proc (.start pb)
-        out (str/trim (slurp (.getInputStream proc)))
-        _ (.waitFor proc)]
+  (let [out (extract-cookie-value "vocuser_information")]
     (when (seq out)
       (json/read-str out :key-fn keyword))))
 
