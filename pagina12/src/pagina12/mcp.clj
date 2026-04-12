@@ -11,13 +11,27 @@
 (def ^:private base-url "https://www.pagina12.com.ar")
 (def ^:private ua "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
 
+(defn- cookie-script
+  [domain body]
+  (str
+   "import browser_cookie3\n"
+   "orig_get_password = browser_cookie3._LinuxPasswordManager.get_password\n"
+   "def patched_get_password(self, os_crypt_name):\n"
+   "    try:\n"
+   "        return orig_get_password(self, os_crypt_name)\n"
+   "    except Exception:\n"
+   "        return browser_cookie3.CHROMIUM_DEFAULT_PASSWORD\n"
+   "browser_cookie3._LinuxPasswordManager.get_password = patched_get_password\n"
+   "cj = browser_cookie3.chrome(domain_name=" (pr-str domain) ")\n"
+   body))
+
 (defn- get-token
   "Extract the Coral Talk JWT from the socies-auth-token Chrome cookie."
   []
-  (let [script (str "import browser_cookie3, json\n"
-                    "cj = browser_cookie3.chrome(domain_name='pagina12.com.ar')\n"
-                    "tok = next((c.value for c in cj if c.name == 'socies-auth-token'), None)\n"
-                    "print(tok or '')")
+  (let [script (cookie-script
+                "pagina12.com.ar"
+                (str "tok = next((c.value for c in cj if c.name == 'socies-auth-token'), None)\n"
+                     "print(tok or '')"))
         pb (ProcessBuilder. ["python3" "-c" script])
         proc (.start pb)
         raw (str/trim (slurp (.getInputStream proc)))

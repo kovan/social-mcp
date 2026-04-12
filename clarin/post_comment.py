@@ -7,6 +7,22 @@ from playwright.sync_api import sync_playwright
 import browser_cookie3
 
 
+def _chrome_cookies(domain):
+    orig_get_password = browser_cookie3._LinuxPasswordManager.get_password
+
+    def patched_get_password(self, os_crypt_name):
+        try:
+            return orig_get_password(self, os_crypt_name)
+        except Exception:
+            return browser_cookie3.CHROMIUM_DEFAULT_PASSWORD
+
+    browser_cookie3._LinuxPasswordManager.get_password = patched_get_password
+    try:
+        return browser_cookie3.chrome(domain_name=domain)
+    finally:
+        browser_cookie3._LinuxPasswordManager.get_password = orig_get_password
+
+
 def post_comment(article_url, body, parent_id=None):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, channel="chrome")
@@ -14,7 +30,7 @@ def post_comment(article_url, body, parent_id=None):
         # Inject Chrome cookies for both clarin.com and viafoura.co
         cookies = []
         for domain in ["clarin.com", "viafoura.co"]:
-            cj = browser_cookie3.chrome(domain_name=domain)
+            cj = _chrome_cookies(domain)
             for c in cj:
                 cookie = {
                     "name": c.name,
