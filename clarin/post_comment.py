@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Post a comment on a Clarin article using Playwright with Chrome's cookies."""
-import sys
 import json
+import re
+import sys
 import time
-from playwright.sync_api import sync_playwright
+
 import browser_cookie3
+import requests
+from playwright.sync_api import sync_playwright
+
+
+SECTION_UUID = "00000000-0000-4000-8000-82628f44cd3d"
 
 
 def _chrome_cookies(domain):
@@ -23,7 +29,61 @@ def _chrome_cookies(domain):
         browser_cookie3._LinuxPasswordManager.get_password = orig_get_password
 
 
+def _build_requests_session():
+    session = requests.Session()
+    for domain in ["clarin.com", "viafoura.co"]:
+        for cookie in _chrome_cookies(domain):
+            session.cookies.set_cookie(cookie)
+    return session
+
+
+def _extract_article_id(article_url):
+    match = re.search(r"_\d+_([A-Za-z0-9]+)\.html$", article_url)
+    if match:
+        return match.group(1)
+    return article_url.rstrip("/").rsplit("/", 1)[-1].replace(".html", "")
+
+
+def _get_container_uuid(session, article_url):
+    article_id = _extract_article_id(article_url)
+    response = session.get(
+        f"https://www.clarin.com/api/viafoura/comments/{article_id}", timeout=20
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return payload["data"]["content_container_uuid"]
+
+
+def _iter_visible_comments(session, container_uuid, limit=100):
+    response = session.get(
+        f"https://livecomments.viafoura.co/v4/livecomments/{SECTION_UUID}/{container_uuid}/comments",
+        params={"limit": limit, "reply_limit": 5, "sorted_by": "newest"},
+        timeout=20,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    for comment in payload.get("contents", []):
+        yield comment
+        for reply in (comment.get("replies") or {}).get("contents", []):
+            yield reply
+
+
+def _comment_is_visible(session, article_url, body):
+    container_uuid = _get_container_uuid(session, article_url)
+    target = " ".join(body.split())
+    for comment in _iter_visible_comments(session, container_uuid):
+        content = " ".join((comment.get("content") or "").split())
+        if content == target:
+            return {
+                "visible": True,
+                "content_uuid": comment.get("content_uuid"),
+                "container_uuid": container_uuid,
+            }
+    return {"visible": False, "container_uuid": container_uuid}
+
+
 def post_comment(article_url, body, parent_id=None):
+    http_session = _build_requests_session()
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True, channel="chrome")
 
@@ -89,7 +149,29 @@ def post_comment(article_url, body, parent_id=None):
         pub_btn.click(force=True, timeout=5000)
         time.sleep(3)
 
-        print(json.dumps({"success": True, "message": "Comment posted"}))
+        verification = _comment_is_visible(http_session, article_url, body)
+        if verification["visible"]:
+            print(
+                json.dumps(
+                    {
+                        "success": True,
+                        "visible": True,
+                        "message": "Comment posted and visible",
+                        "content_uuid": verification.get("content_uuid"),
+                    }
+                )
+            )
+        else:
+            print(
+                json.dumps(
+                    {
+                        "success": True,
+                        "visible": False,
+                        "message": "Comment submission completed but is not publicly visible yet",
+                        "container_uuid": verification.get("container_uuid"),
+                    }
+                )
+            )
         browser.close()
 
 
