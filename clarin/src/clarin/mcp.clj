@@ -167,6 +167,9 @@
 (def ^:private post-script-path
   (str (System/getProperty "user.dir") "/post_comment.py"))
 
+(def ^:private notifications-script-path
+  (str (System/getProperty "user.dir") "/read_notifications.py"))
+
 (defn- api-post-comment [article-url body parent-id]
   (let [args-json (json/write-str (cond-> {:url article-url :body body}
                                     parent-id (assoc :parent_id parent-id)))
@@ -181,6 +184,61 @@
           (str "Comment posted successfully.")
           (str "Post result: " out)))
       (throw (ex-info (str "Playwright post failed: " out) {})))))
+
+(defn- format-notification [n]
+  (let [actor (or (:display_name n)
+                  (:actor_name n)
+                  (:sender_name n)
+                  (:username n)
+                  "unknown")
+        kind (or (:notification_type n)
+                 (:type n)
+                 (:event_type n)
+                 "notification")
+        text (or (:content n)
+                 (:body n)
+                 (:message n)
+                 (:title n)
+                 "")
+        article-url (or (:url n)
+                        (:content_url n)
+                        (:target_url n))
+        ts (or (:date_created n)
+               (:created_at n)
+               (:timestamp n))]
+    (str actor " - " kind
+         (when (seq text) (str "\n" text))
+         (when article-url (str "\n" article-url))
+         (when ts (str "\n" ts)))))
+
+(defn- api-notifications [n]
+  (let [args-json (json/write-str {:limit (min (max (or n 20) 1) 100)})
+        pb (ProcessBuilder. ["python3" notifications-script-path args-json])
+        _ (.redirectErrorStream pb true)
+        proc (.start pb)
+        out (str/trim (slurp (.getInputStream proc)))
+        exit (.waitFor proc 60 java.util.concurrent.TimeUnit/SECONDS)
+        resp (when (and exit (zero? (.exitValue proc)))
+               (json/read-str out :key-fn keyword))]
+    (when-not resp
+      (throw (ex-info (str "Notifications fetch failed: " out) {})))
+    (when-let [err (:error resp)]
+      (throw (ex-info err {})))
+    (let [profile (:profile resp)
+          notifications (or (:notifications resp) [])
+          broadcasts (or (:broadcasts resp) [])
+          summary (str "Clarín notifications"
+                       "\nUser UUID: " (or (:user_uuid resp) "unknown")
+                       (when-let [created (:content_created profile)]
+                         (str "\nComments made: " created))
+                       (when-let [received (:likes_received profile)]
+                         (str "\nLikes received: " received))
+                       "\nBroadcasts: " (count broadcasts)
+                       "\nNotifications: " (count notifications))]
+      (if (seq notifications)
+        (str summary "\n\n"
+             (str/join "\n\n" (map format-notification notifications)))
+        (str summary "\n\nNo notifications.")))))
 
 ;;; ---- MCP boilerplate ----
 
@@ -205,7 +263,13 @@
                                       :description "Comment text"}
                                :parent_id {:type "string"
                                            :description "UUID of comment to reply to (optional, for threaded replies)"}}
-                  :required ["article_url" "body"]}}])
+                  :required ["article_url" "body"]}}
+   {:name "notifications"
+    :description "Get your Clarín/Viafoura notifications using browser cookies."
+    :inputSchema {:type "object"
+                  :properties {:n {:type "number"
+                                   :description "Number of notifications to fetch (default 20, max 100)"}}
+                  :required []}}])
 
 (defn- respond [id result]
   {:jsonrpc "2.0" :id id :result result})
@@ -259,6 +323,9 @@
             (api-post-comment (:article_url arguments)
                               (:body arguments)
                               (:parent_id arguments))
+
+            "notifications"
+            (api-notifications (clamp (:n arguments) 20 100))
 
             (throw (ex-info (str "Unknown tool: " name) {})))]
       (respond id (tool-result result)))
