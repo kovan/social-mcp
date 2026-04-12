@@ -2,6 +2,7 @@
   (:require [clojure.data.json :as json]
             [clojure.string :as str])
   (:import [java.io BufferedReader InputStreamReader StringWriter PrintWriter]
+           [java.util Base64]
            [java.net URLDecoder])
   (:gen-class))
 
@@ -41,6 +42,16 @@
             ;; Strip Express.js s: prefix then take first 3 JWT parts
             stripped (if (str/starts-with? decoded "s:") (subs decoded 2) decoded)]
         (str/join "." (take 3 (str/split stripped #"\.")))))))
+
+(defn- token-sub
+  "Extract the Coral user ID from the JWT subject."
+  [token]
+  (when (seq token)
+    (let [[_ payload] (str/split token #"\.")
+          padded (str payload (apply str (repeat (mod (- 4 (mod (count payload) 4)) 4) "=")))
+          decoded (.decode (Base64/getUrlDecoder) ^String padded)
+          claims (json/read-str (String. decoded "UTF-8") :key-fn keyword)]
+      (:sub claims))))
 
 (defn- curl-json [& args]
   (let [pb (ProcessBuilder. ^java.util.List (vec args))
@@ -160,6 +171,50 @@
           (str "Comment posted [" (:id c) "]:\n" (:body c))
           (throw (ex-info (str "Post failed: " (:errors result)) {:resp resp})))))))
 
+(defn- api-my-comments [n]
+  (let [token (get-token)
+        author-id (token-sub token)]
+    (when-not (seq token)
+      (throw (ex-info "Not logged in to pagina12.com.ar in Chrome." {})))
+    (when-not (seq author-id)
+      (throw (ex-info "Could not resolve current user ID from auth token." {})))
+    (let [query (str "{ comments(query: { author_id: \"" author-id "\", limit: " n ", sortOrder: DESC }) {"
+                      "  hasNextPage endCursor"
+                      "  nodes {"
+                      "    id body created_at status"
+                      "    parent { id }"
+                      "    asset { id title url }"
+                      "    replies { nodes { id body created_at user { username } } }"
+                      "  }"
+                      "} }")
+          resp (graphql query nil true)
+          comments (get-in resp [:data :comments :nodes])]
+      (if (seq comments)
+        (str "# Página 12 - My comments (" (count comments) " shown)\n\n"
+             (str/join "\n\n"
+                       (map (fn [c]
+                              (let [asset (:asset c)
+                                    replies (get-in c [:replies :nodes])]
+                                (str
+                                 (if (:parent c) "Reply" "Comment")
+                                 " [" (:id c) "]"
+                                 " (" (:created_at c) ")\n"
+                                 (when-let [title (:title asset)]
+                                   (str title "\n"))
+                                 (when-let [url (:url asset)]
+                                   (str url "\n"))
+                                 (:body c)
+                                 (when (seq replies)
+                                   (str "\nReplies:\n"
+                                        (str/join "\n"
+                                                  (map (fn [r]
+                                                         (str "- " (or (get-in r [:user :username]) "unknown")
+                                                              " [" (:created_at r) "]: "
+                                                              (:body r)))
+                                                       replies)))))))
+                            comments)))
+        "No comments found for the current user."))))
+
 ;;; ---- MCP boilerplate ----
 
 (def ^:private tools
@@ -183,7 +238,13 @@
                                       :description "Comment text"}
                                :parent_id {:type "string"
                                            :description "ID of comment to reply to (optional, for threaded replies)"}}
-                  :required ["article_url" "body"]}}])
+                  :required ["article_url" "body"]}}
+   {:name "my_comments"
+    :description "List the current logged-in user's recent comments on Página 12, including article links and direct replies when available."
+    :inputSchema {:type "object"
+                  :properties {:n {:type "number"
+                                   :description "Number of comments to fetch (default 20, max 100)"}}
+                  :required []}}])
 
 (defn- respond [id result]
   {:jsonrpc "2.0" :id id :result result})
@@ -227,6 +288,9 @@
             (api-post-comment (:article_url arguments)
                               (:body arguments)
                               (:parent_id arguments))
+
+            "my_comments"
+            (api-my-comments (clamp (:n arguments) 20 100))
 
             (throw (ex-info (str "Unknown tool: " name) {})))]
       (respond id (tool-result result)))
