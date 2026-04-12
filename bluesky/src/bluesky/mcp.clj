@@ -78,7 +78,7 @@
     {:protocolVersion "2024-11-05"
      :capabilities {:tools {}}
      :serverInfo {:name "bluesky-mcp" :version "0.1.0"}
-     :instructions "MCP server for Bluesky. Set BLUESKY_HANDLE and BLUESKY_APP_PASSWORD (app password from Settings > App Passwords)."}))
+     :instructions "MCP server for Bluesky. Read-only tools work without auth via the public AppView API. Set BLUESKY_HANDLE and BLUESKY_APP_PASSWORD for notifications, posting, replies, follows, and a personalized timeline."}))
 
 (defn- handle-tools-list [id _params]
   (respond id {:tools tools}))
@@ -89,7 +89,7 @@
           (case name
             "timeline"
             (fmt/format-feed (api/timeline :limit (clamp-n arguments 25))
-                             "Timeline")
+                             (if (api/read-only-mode?) "Discover" "Timeline"))
 
             "search"
             (fmt/format-feed (api/search (:query arguments)

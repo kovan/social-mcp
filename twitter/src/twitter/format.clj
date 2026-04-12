@@ -126,17 +126,17 @@
 (defn format-trending
   "Format trending topics response."
   [data]
-  (let [modules (get-in data [:timeline :body :generalTimeline :timeline :entries])
-        ;; Extract trend items from the explore page
-        trends (->> modules
+  (let [entries (concat
+                 (get-in data [:timeline :body :generalTimeline :timeline :entries] [])
+                 (mapcat #(get-in % [:addEntries :entries] [])
+                         (get-in data [:timeline :instructions] [])))
+        ;; Newer responses expose a timelineModule inside addEntries, older ones expose items directly.
+        trends (->> entries
                     (mapcat (fn [entry]
-                              (let [items (get-in entry [:content :items])]
-                                (when items
-                                  (for [item items
-                                        :let [trend (get-in item [:item :content :trend])]
-                                        :when trend]
-                                    trend)))))
-                    (remove nil?))]
+                              (concat
+                               (get-in entry [:content :items] [])
+                               (get-in entry [:content :timelineModule :items] []))))
+                    (keep #(get-in % [:item :content :trend])))]
     (if (seq trends)
       (str "# Trending (" (count trends) " topics)\n\n"
            (str/join "\n"

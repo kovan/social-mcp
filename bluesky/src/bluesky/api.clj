@@ -5,6 +5,9 @@
   (:import [java.net URLEncoder]))
 
 (def ^:private base-url "https://bsky.social/xrpc")
+(def ^:private public-base-url "https://api.bsky.app/xrpc")
+(def ^:private discover-feed-uri
+  "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot")
 
 (def ^:private session (atom nil))
 
@@ -41,6 +44,15 @@
     (when (seq out)
       (json/read-str out :key-fn keyword))))
 
+(defn- has-creds? []
+  (let [handle (System/getenv "BLUESKY_HANDLE")
+        password (System/getenv "BLUESKY_APP_PASSWORD")]
+    (and (seq handle) (seq password))))
+
+(defn read-only-mode?
+  []
+  (not (has-creds?)))
+
 (defn- get-creds []
   (let [handle (System/getenv "BLUESKY_HANDLE")
         password (System/getenv "BLUESKY_APP_PASSWORD")]
@@ -69,22 +81,26 @@
   (if (str/starts-with? uri-or-url "at://")
     uri-or-url
     (if-let [[_ handle rkey] (re-find #"bsky\.app/profile/([^/]+)/post/([^/?#]+)" uri-or-url)]
-      (let [profile (http-get (str base-url "/app.bsky.actor.getProfile")
-                              :token (tok) :params {:actor handle})]
+      (let [profile (http-get (str public-base-url "/app.bsky.actor.getProfile")
+                              :params {:actor handle})]
         (str "at://" (:did profile) "/app.bsky.feed.post/" rkey))
       (throw (ex-info (str "Cannot parse URI/URL: " uri-or-url) {})))))
 
 (defn timeline
-  "Get authenticated user's home timeline."
+  "Get authenticated user's home timeline, or the public Discover feed if no credentials are configured."
   [& {:keys [limit] :or {limit 25}}]
-  (http-get (str base-url "/app.bsky.feed.getTimeline")
-            :token (tok) :params {:limit (min limit 100)}))
+  (if (has-creds?)
+    (http-get (str base-url "/app.bsky.feed.getTimeline")
+              :token (tok) :params {:limit (min limit 100)})
+    (http-get (str public-base-url "/app.bsky.feed.getFeed")
+              :params {:feed discover-feed-uri
+                       :limit (min limit 100)})))
 
 (defn search
   "Search Bluesky posts. Normalizes response to {:feed [...]} format."
   [query & {:keys [limit sort] :or {limit 25 sort "latest"}}]
-  (let [resp (http-get (str base-url "/app.bsky.feed.searchPosts")
-                       :token (tok)
+  (let [resp (http-get (str (if (has-creds?) base-url public-base-url) "/app.bsky.feed.searchPosts")
+                       :token (when (has-creds?) (tok))
                        :params (cond-> {:q query :limit (min limit 100)}
                                 sort (assoc :sort sort)))]
     {:feed (mapv #(hash-map :post %) (:posts resp))}))
@@ -93,8 +109,9 @@
   "Get a post and its reply thread."
   [uri-or-url & {:keys [depth] :or {depth 6}}]
   (let [uri (url->at-uri uri-or-url)]
-    (http-get (str base-url "/app.bsky.feed.getPostThread")
-              :token (tok) :params {:uri uri :depth depth})))
+    (http-get (str (if (has-creds?) base-url public-base-url) "/app.bsky.feed.getPostThread")
+              :token (when (has-creds?) (tok))
+              :params {:uri uri :depth depth})))
 
 (defn notifications
   "Get notifications for the authenticated user."

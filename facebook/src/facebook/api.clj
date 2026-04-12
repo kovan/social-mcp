@@ -208,6 +208,15 @@
           (recur (+ idx (count marker))))))
     @results))
 
+(defn- consent-flow-blocked?
+  "Facebook sometimes serves an ads-consent interstitial instead of the feed.
+   Detect that so the caller gets a useful error instead of an empty post list."
+  [html]
+  (and (str/includes? html "\"launch_consent_flow\"")
+       (or (str/includes? html "ConsentAPIPresentPromptAction")
+           (str/includes? html "procesar tus datos para los anuncios")
+           (str/includes? html "process your data for ads"))))
+
 ;; --- Public API functions ---
 
 (defn init!
@@ -223,6 +232,10 @@
   (init-cookies!)
   (let [resp (curl-get "https://www.facebook.com/")
         body (:body resp)]
+    (when (consent-flow-blocked? body)
+      (throw (ex-info
+              "Facebook is showing an ads-consent prompt instead of the feed. Open facebook.com once in Chrome, finish or dismiss that prompt, then retry."
+              {:kind :consent-prompt})))
     ;; Also extract tokens while we're at it
     (when-not @fb-dtsg
       (let [dtsg (or (second (re-find #"\"DTSGInitialData\",\[\],\{\"token\":\"([^\"]+)\"" body))
@@ -237,4 +250,8 @@
   (let [url (str "https://www.facebook.com/" (str/replace page-name #"^@" "") "/")
         resp (curl-get url)
         body (:body resp)]
+    (when (consent-flow-blocked? body)
+      (throw (ex-info
+              "Facebook is showing an ads-consent prompt instead of page content. Open facebook.com once in Chrome, finish or dismiss that prompt, then retry."
+              {:kind :consent-prompt})))
     (take n (extract-feed-from-html body))))
