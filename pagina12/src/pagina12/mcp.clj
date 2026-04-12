@@ -211,9 +211,50 @@
                                                          (str "- " (or (get-in r [:user :username]) "unknown")
                                                               " [" (:created_at r) "]: "
                                                               (:body r)))
-                                                       replies)))))))
+                                                          replies)))))))
                             comments)))
         "No comments found for the current user."))))
+
+(defn- api-my-replies [n]
+  (let [token (get-token)
+        author-id (token-sub token)]
+    (when-not (seq token)
+      (throw (ex-info "Not logged in to pagina12.com.ar in Chrome." {})))
+    (when-not (seq author-id)
+      (throw (ex-info "Could not resolve current user ID from auth token." {})))
+    (let [query (str "{ comments(query: { author_id: \"" author-id "\", limit: 100, sortOrder: DESC }) {"
+                      "  nodes {"
+                      "    id body created_at"
+                      "    asset { title url }"
+                      "    replies { nodes { id body created_at user { username } } }"
+                      "  }"
+                      "} }")
+          resp (graphql query nil true)
+          comments (->> (get-in resp [:data :comments :nodes])
+                        (filter #(seq (get-in % [:replies :nodes])))
+                        (take n))]
+      (if (seq comments)
+        (str "# Página 12 - Replies to my comments (" (count comments) " threads)\n\n"
+             (str/join "\n\n"
+                       (map (fn [c]
+                              (let [asset (:asset c)
+                                    replies (get-in c [:replies :nodes])]
+                                (str "Your comment [" (:id c) "]"
+                                     " (" (:created_at c) ")\n"
+                                     (when-let [title (:title asset)]
+                                       (str title "\n"))
+                                     (when-let [url (:url asset)]
+                                       (str url "\n"))
+                                     (:body c)
+                                     "\nReplies:\n"
+                                     (str/join "\n"
+                                               (map (fn [r]
+                                                      (str "- " (or (get-in r [:user :username]) "unknown")
+                                                           " [" (:created_at r) "]: "
+                                                           (:body r)))
+                                                    replies)))))
+                            comments)))
+        "No direct replies found on your recent comments."))))
 
 ;;; ---- MCP boilerplate ----
 
@@ -244,6 +285,12 @@
     :inputSchema {:type "object"
                   :properties {:n {:type "number"
                                    :description "Number of comments to fetch (default 20, max 100)"}}
+                  :required []}}
+   {:name "my_replies"
+    :description "List only the current logged-in user's recent comment threads that already have direct replies."
+    :inputSchema {:type "object"
+                  :properties {:n {:type "number"
+                                   :description "Number of replied threads to fetch (default 20, max 100)"}}
                   :required []}}])
 
 (defn- respond [id result]
@@ -291,6 +338,9 @@
 
             "my_comments"
             (api-my-comments (clamp (:n arguments) 20 100))
+
+            "my_replies"
+            (api-my-replies (clamp (:n arguments) 20 100))
 
             (throw (ex-info (str "Unknown tool: " name) {})))]
       (respond id (tool-result result)))
