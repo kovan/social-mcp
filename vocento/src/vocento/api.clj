@@ -1,8 +1,8 @@
-(ns elcorreo.api
-  "Vocento comments API client for elcorreo.com."
+(ns vocento.api
+  "Vocento comments API client."
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
-            [elcorreo.auth :as auth]))
+            [vocento.auth :as auth]))
 
 (def ^:private comments-api "https://comments.vocento.com")
 

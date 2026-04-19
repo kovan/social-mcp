@@ -1,4 +1,4 @@
-(ns elcorreo.auth
+(ns vocento.auth
   "Extract Vocento auth tokens from Chrome cookies."
   (:require [clojure.data.json :as json]
             [clojure.string :as str]))

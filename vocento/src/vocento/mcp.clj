@@ -1,8 +1,8 @@
-(ns elcorreo.mcp
+(ns vocento.mcp
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
-            [elcorreo.api :as api]
-            [elcorreo.format :as fmt])
+            [vocento.api :as api]
+            [vocento.format :as fmt])
   (:import [java.io BufferedReader InputStreamReader])
   (:gen-class))
 
@@ -59,8 +59,8 @@
   (respond id
     {:protocolVersion "2024-11-05"
      :capabilities {:tools {}}
-     :serverInfo {:name "elcorreo-mcp" :version "0.1.0"}
-     :instructions "MCP server for elcorreo.com comments. Uses Chrome cookies for authentication - make sure you're logged in to elcorreo.com in Chrome."}))
+     :serverInfo {:name "vocento-mcp" :version "0.1.0"}
+     :instructions "MCP server for Vocento comments. Uses elcorreo.com Chrome cookies for authentication - make sure you're logged in to elcorreo.com in Chrome."}))
 
 (defn- handle-tools-list [id _params]
   (respond id {:tools tools}))

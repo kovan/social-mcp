@@ -1,5 +1,5 @@
-(ns elcorreo.format
-  "Format elcorreo.com API responses into readable text."
+(ns vocento.format
+  "Format Vocento API responses into readable text."
   (:require [clojure.string :as str]))
 
 (defn format-front-page [urls]
@@ -9,7 +9,7 @@
          (map-indexed (fn [i url]
                         (let [;; extract title-like slug from URL
                               slug (-> url
-                                       (str/replace #"https://www\.elcorreo\.com/" "")
+                                       (str/replace #"https://www\.[^/]+/" "")
                                        (str/replace #"-\d+-\w+\.html$" "")
                                        (str/replace #"/" " > ")
                                        (str/replace #"-" " "))]
