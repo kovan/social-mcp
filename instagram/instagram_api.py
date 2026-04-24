@@ -20,19 +20,52 @@ def save_state(state):
         json.dump(state, f)
 
 
+def load_session_settings():
+    if os.path.exists(SESSION_FILE):
+        with open(SESSION_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def sessionid_from_settings(settings):
+    auth = settings.get("authorization_data") or {}
+    if auth.get("sessionid"):
+        return auth["sessionid"]
+    cookies = settings.get("cookies") or {}
+    if isinstance(cookies, dict) and cookies.get("sessionid"):
+        return cookies["sessionid"]
+    return None
+
+
 def get_client():
     from instagrapi import Client
-    username = os.environ.get("INSTAGRAM_USERNAME")
-    password = os.environ.get("INSTAGRAM_PASSWORD")
-    if not username or not password:
-        raise Exception("Set INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD environment variables")
     cl = Client()
     cl.delay_range = [1, 3]
-    if os.path.exists(SESSION_FILE):
+    settings = load_session_settings()
+
+    if settings:
         cl.load_settings(SESSION_FILE)
-    cl.login(username, password)
-    cl.dump_settings(SESSION_FILE)
-    return cl
+        sessionid = sessionid_from_settings(settings)
+        if sessionid:
+            try:
+                cl.login_by_sessionid(sessionid)
+                cl.dump_settings(SESSION_FILE)
+                return cl
+            except Exception:
+                pass
+
+    username = os.environ.get("INSTAGRAM_USERNAME")
+    password = os.environ.get("INSTAGRAM_PASSWORD")
+    if username and password:
+        cl.login(username, password)
+        cl.dump_settings(SESSION_FILE)
+        return cl
+
+    raise Exception(
+        "Instagram auth unavailable: provide INSTAGRAM_USERNAME and "
+        "INSTAGRAM_PASSWORD, or ensure ~/.instagram_session.json contains "
+        "a valid sessionid"
+    )
 
 
 def format_media(media):

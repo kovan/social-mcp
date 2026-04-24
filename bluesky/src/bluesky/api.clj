@@ -1,6 +1,8 @@
 (ns bluesky.api
   "AT Protocol client for Bluesky (bsky.social)."
   (:require [clojure.data.json :as json]
+            [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str])
   (:import [java.net URLEncoder]))
 
@@ -8,8 +10,29 @@
 (def ^:private public-base-url "https://api.bsky.app/xrpc")
 (def ^:private discover-feed-uri
   "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot")
+(def ^:private creds-path
+  (str (System/getProperty "user.home") "/.config/social-mcp/bluesky.edn"))
 
 (def ^:private session (atom nil))
+
+(defn- read-creds-file []
+  (let [f (io/file creds-path)]
+    (when (.exists f)
+      (let [data (edn/read-string (slurp f))
+            handle (or (:handle data) (:identifier data))
+            password (or (:app-password data) (:password data))]
+        (when (and (seq handle) (seq password))
+          {:handle handle :password password})))))
+
+(defn- resolve-creds []
+  (let [env-handle (System/getenv "BLUESKY_HANDLE")
+        env-password (System/getenv "BLUESKY_APP_PASSWORD")]
+    (cond
+      (and (seq env-handle) (seq env-password))
+      {:handle env-handle :password env-password}
+
+      :else
+      (read-creds-file))))
 
 (defn- http-post [url body & {:keys [token]}]
   (let [json-str (json/write-str body)
@@ -45,20 +68,17 @@
       (json/read-str out :key-fn keyword))))
 
 (defn- has-creds? []
-  (let [handle (System/getenv "BLUESKY_HANDLE")
-        password (System/getenv "BLUESKY_APP_PASSWORD")]
-    (and (seq handle) (seq password))))
+  (boolean (resolve-creds)))
 
 (defn read-only-mode?
   []
   (not (has-creds?)))
 
 (defn- get-creds []
-  (let [handle (System/getenv "BLUESKY_HANDLE")
-        password (System/getenv "BLUESKY_APP_PASSWORD")]
-    (when-not (and (seq handle) (seq password))
-      (throw (ex-info "Set BLUESKY_HANDLE and BLUESKY_APP_PASSWORD env vars" {})))
-    {:handle handle :password password}))
+  (or (resolve-creds)
+      (throw (ex-info (str "Set BLUESKY_HANDLE and BLUESKY_APP_PASSWORD, "
+                           "or create " creds-path)
+                      {}))))
 
 (defn- ensure-session! []
   (when-not @session

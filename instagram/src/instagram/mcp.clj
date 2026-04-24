@@ -29,7 +29,7 @@
                                      :description "Instagram post URL (e.g. https://www.instagram.com/p/ABC123/) or shortcode"}}
                   :required ["url"]}}
    {:name "post_comment"
-    :description "Post a comment on an Instagram post. Requires INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD env vars."
+    :description "Post a comment on an Instagram post. Uses ~/.instagram_session.json when available, otherwise falls back to INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD."
     :inputSchema {:type "object"
                   :properties {:url {:type "string"
                                      :description "Instagram post URL or shortcode"}
@@ -123,7 +123,7 @@
     {:protocolVersion "2024-11-05"
      :capabilities {:tools {}}
      :serverInfo {:name "instagram-mcp" :version "0.1.0"}
-     :instructions "MCP server for Instagram. Requires INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD environment variables."}))
+     :instructions "MCP server for Instagram. Uses ~/.instagram_session.json when available; otherwise set INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD."}))
 
 (defn- handle-tools-list [id _params]
   (respond id {:tools tools}))

@@ -78,7 +78,7 @@
     {:protocolVersion "2024-11-05"
      :capabilities {:tools {}}
      :serverInfo {:name "bluesky-mcp" :version "0.1.0"}
-     :instructions "MCP server for Bluesky. Read-only tools work without auth via the public AppView API. Set BLUESKY_HANDLE and BLUESKY_APP_PASSWORD for notifications, posting, replies, follows, and a personalized timeline."}))
+     :instructions "MCP server for Bluesky. Read-only tools work without auth via the public AppView API. For authenticated actions, set BLUESKY_HANDLE and BLUESKY_APP_PASSWORD or create ~/.config/social-mcp/bluesky.edn with :handle and :app-password."}))
 
 (defn- handle-tools-list [id _params]
   (respond id {:tools tools}))
