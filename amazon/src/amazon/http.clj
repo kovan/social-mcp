@@ -1,7 +1,11 @@
 (ns amazon.http
   (:require [amazon.cookies :as cookies]
             [clojure.string :as str])
-  (:import [java.net URLEncoder]))
+  (:import [java.io ByteArrayInputStream ByteArrayOutputStream]
+           [java.net URLEncoder]
+           [java.nio.charset StandardCharsets]
+           [java.nio.file Files]
+           [java.util.zip GZIPInputStream]))
 
 (def ^:private ua
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36")
@@ -23,10 +27,27 @@
                    "="
                    (URLEncoder/encode (str v) "UTF-8")))))
 
+(defn- gzip? [bytes]
+  (and (<= 2 (alength bytes))
+       (= 0x1f (bit-and 0xff (aget bytes 0)))
+       (= 0x8b (bit-and 0xff (aget bytes 1)))))
+
+(defn- gunzip [bytes]
+  (with-open [in (GZIPInputStream. (ByteArrayInputStream. bytes))
+              out (ByteArrayOutputStream.)]
+    (.transferTo in out)
+    (.toByteArray out)))
+
+(defn- read-body [file]
+  (let [bytes (Files/readAllBytes (.toPath file))
+        decoded (if (gzip? bytes) (gunzip bytes) bytes)]
+    (String. decoded StandardCharsets/UTF_8)))
+
 (defn request
   [url & {:keys [method params headers]}]
   (let [body-file (java.io.File/createTempFile "amazon-body" ".html")
         base ["curl" "-sSL"
+              "--compressed"
               "-b" (cookie-jar!) "-c" (cookie-jar!)
               "-H" (str "User-Agent: " ua)
               "-H" "Accept-Language: es-ES,es;q=0.9,en;q=0.8"
@@ -41,7 +62,7 @@
         status-str (str/trim (slurp (.getInputStream proc)))
         err (str/trim (slurp (.getErrorStream proc)))
         exit (.waitFor proc)
-        body (slurp body-file)]
+        body (read-body body-file)]
     (.delete body-file)
     (when-not (zero? exit)
       (throw (ex-info (str "curl failed: " err) {:exit exit})))

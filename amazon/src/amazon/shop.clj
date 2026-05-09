@@ -5,30 +5,76 @@
   (:import [org.jsoup Jsoup]))
 
 (def base-url "https://www.amazon.es")
+(defonce ^:private description-cache (atom {}))
 
 (defn- clean [s]
   (some-> s (str/replace #"\s+" " ") str/trim))
 
-(defn search-products [query]
-  (let [resp (http/request (str base-url "/s?" (http/encode-query {"k" query}))
-                           :headers {"Accept" "text/html"})
-        doc (Jsoup/parse ^String (:body resp))
-        items (.select doc "[data-component-type=s-search-result]")]
-    (->> items
-         (map (fn [item]
-                (let [asin (.attr item "data-asin")
-                      title-el (or (.selectFirst item "h2 a span")
-                                   (.selectFirst item "a.a-text-normal span")
-                                   (.selectFirst item "h2"))
-                      price-el (or (.selectFirst item ".a-price .a-offscreen")
-                                   (.selectFirst item ".a-price"))]
-                  {:asin asin
-                   :title (clean (some-> title-el .text))
-                   :price (clean (some-> price-el .text))
-                   :url (when (seq asin) (str base-url "/dp/" asin))})))
-         (filter #(and (seq (:asin %)) (seq (:title %))))
-         (take 8)
-         vec)))
+(defn- truncate-text [s n]
+  (when (seq s)
+    (if (<= (count s) n)
+      s
+      (str (subs s 0 n) "..."))))
+
+(defn- element-texts [doc selector]
+  (->> (.select doc selector)
+       (map #(clean (.text %)))
+       (remove str/blank?)))
+
+(defn- product-description-from-doc [doc]
+  (let [bullets (concat
+                 (element-texts doc "#feature-bullets li span.a-list-item")
+                 (element-texts doc "#pqv-feature-bullets li span.a-list-item")
+                 (element-texts doc "#productFactsDesktopExpander li"))
+        bullet-text (->> bullets
+                         (remove #(re-find #"(?i)informar de un problema|report an issue" %))
+                         distinct
+                         (take 3)
+                         (str/join " "))
+        description (or (not-empty bullet-text)
+                        (clean (some-> (.selectFirst doc "#productDescription") .text)))]
+    (truncate-text description 700)))
+
+(defn- product-description [asin]
+  (when (seq asin)
+    (if (contains? @description-cache asin)
+      (get @description-cache asin)
+      (let [description (try
+                          (let [resp (http/request (str base-url "/dp/" asin)
+                                                   :headers {"Accept" "text/html"})
+                                doc (Jsoup/parse ^String (:body resp))]
+                            (product-description-from-doc doc))
+                          (catch Exception _ nil))]
+        (swap! description-cache assoc asin description)
+        description))))
+
+(defn search-products
+  ([query] (search-products query {}))
+  ([query {:keys [include-description include_description max-results max_results]}]
+   (let [include-description? (boolean (or include-description include_description))
+         max-results (min 10 (max 1 (int (or max-results max_results 8))))
+         resp (http/request (str base-url "/s?" (http/encode-query {"k" query}))
+                            :headers {"Accept" "text/html"})
+         doc (Jsoup/parse ^String (:body resp))
+         items (.select doc "[data-component-type=s-search-result]")
+         results (->> items
+                      (map (fn [item]
+                             (let [asin (.attr item "data-asin")
+                                   title-el (or (.selectFirst item "h2 a span")
+                                                (.selectFirst item "a.a-text-normal span")
+                                                (.selectFirst item "h2"))
+                                   price-el (or (.selectFirst item ".a-price .a-offscreen")
+                                                (.selectFirst item ".a-price"))]
+                               {:asin asin
+                                :title (clean (some-> title-el .text))
+                                :price (clean (some-> price-el .text))
+                                :url (when (seq asin) (str base-url "/dp/" asin))})))
+                      (filter #(and (seq (:asin %)) (seq (:title %))))
+                      (take max-results)
+                      vec)]
+     (if include-description?
+       (mapv #(assoc % :description (product-description (:asin %))) results)
+       results))))
 
 (defn- first-result-asin [query]
   (or (some-> (search-products query) first :asin)

@@ -7,9 +7,11 @@
 
 (def tools
   [{:name "search_amazon"
-    :description "Search Amazon Spain (amazon.es) products."
+    :description "Search Amazon Spain (amazon.es) products. Set include_description to true to fetch a short product-page description for each result."
     :inputSchema {:type "object"
-                  :properties {:query {:type "string"}}
+                  :properties {:query {:type "string"}
+                               :include_description {:type "boolean" :default false}
+                               :max_results {:type "number" :default 8}}
                   :required ["query"]}}
    {:name "add_to_cart"
     :description "Add an Amazon Spain product to the basket. Use asin when known; otherwise query adds the first search result."
@@ -34,7 +36,7 @@
 (defn- handle-tools-call [id {:keys [name arguments]}]
   (try
     (let [result (case name
-                   "search_amazon" (json/write-str (shop/search-products (:query arguments)))
+                   "search_amazon" (json/write-str (shop/search-products (:query arguments) arguments))
                    "add_to_cart" (shop/add-to-cart arguments)
                    "view_cart" (shop/view-cart)
                    (throw (ex-info (str "Unknown tool: " name) {})))]
