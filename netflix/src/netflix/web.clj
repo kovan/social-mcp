@@ -19,6 +19,50 @@
 (defn- search-url [query]
   (str base-url "/search?q=" (encode-query query)))
 
+(defn- genre-url [code]
+  (str base-url "/browse/genre/" (encode-query code)))
+
+(def tag-presets
+  {"korean_content" {:description "Korean movies and TV shows"
+                     :query "Korean movies and TV shows"}
+   "korean_romance" {:description "Korean romantic shows and movies"
+                     :query "Korean romance"}
+   "korean_comedy" {:description "Korean comedies"
+                    :query "Korean comedy"}
+   "kdrama" {:description "Korean dramas / K-drama"
+             :query "K-drama"}
+   "indian_movies" {:description "Indian and Hindi movies"
+                    :query "Hindi movies"}
+   "bollywood" {:description "Bollywood movies and shows"
+                :query "Bollywood movies"}
+   "feel_good" {:description "Light, upbeat, feel-good titles"
+                :query "feel good movies"}
+   "romantic_comedies" {:description "Romantic comedies"
+                        :code "5475"}
+   "comedies" {:description "Comedies"
+               :code "6548"}
+   "dramas" {:description "Dramas"
+             :code "5763"}
+   "horror" {:description "Horror movies"
+             :code "8711"}
+   "documentaries" {:description "Documentaries"
+                    :code "6839"}
+   "action" {:description "Action and adventure"
+             :code "1365"}
+   "international_movies" {:description "International movies"
+                           :code "78367"}
+   "uhd" {:description "Ultra HD / UHD titles"
+          :query "UHD"}
+   "atmos" {:description "Dolby Atmos titles"
+            :query "Atmos"}})
+
+(defn list-tag-presets []
+  (->> tag-presets
+       (map (fn [[tag data]]
+              (assoc data :tag tag)))
+       (sort-by :tag)
+       vec))
+
 (def ^:private accept-cookie-js
   "(function(){
      const buttons=[...document.querySelectorAll('button')];
@@ -128,25 +172,61 @@
                       {:url (:url state)}))))
   (ensure-profile! conn profile-name))
 
+(defn- navigate-ready! [conn url profile-name]
+  (cdp/navigate! conn url)
+  (when (:switched (ensure-ready! conn profile-name))
+    (cdp/navigate! conn url)
+    (cdp/wait-until! conn "document.readyState === 'complete' && !!document.body" 15000))
+  conn)
+
+(defn- collect-from-url [url {:keys [max-results max_results profile-name profile_name]}]
+  (let [limit (min 50 (max 1 (int (or max_results max-results 10))))
+        profile-name (or profile-name profile_name)
+        conn (cdp/init-page! (cdp/open-page!))]
+    (try
+      (navigate-ready! conn url profile-name)
+      (Thread/sleep 1500)
+      (cdp/eval! conn "window.scrollTo(0, Math.min(document.body.scrollHeight, 1800)); true")
+      (Thread/sleep 1000)
+      (->> (or (cdp/eval! conn collect-results-js) [])
+           (take limit)
+           vec)
+      (finally
+        (cdp/close! conn)))))
+
 (defn search-titles
   ([query] (search-titles query {}))
-  ([query {:keys [max-results max_results profile-name profile_name] :or {max-results 10}}]
-   (let [limit (min 25 (max 1 (int (or max-results max_results 10))))
-         conn (cdp/init-page! (cdp/open-page!))]
-     (try
-       (let [url (search-url query)]
-         (cdp/navigate! conn url)
-         (when (:switched (ensure-ready! conn (or profile-name profile_name)))
-           (cdp/navigate! conn url)
-           (cdp/wait-until! conn "document.readyState === 'complete' && !!document.body" 15000)))
-       (Thread/sleep 1500)
-       (cdp/eval! conn "window.scrollTo(0, Math.min(document.body.scrollHeight, 1800)); true")
-       (Thread/sleep 1000)
-       (->> (or (cdp/eval! conn collect-results-js) [])
-            (take limit)
-            vec)
-       (finally
-         (cdp/close! conn))))))
+  ([query opts]
+   (collect-from-url (search-url query) opts)))
+
+(defn browse-genre
+  ([code] (browse-genre code {}))
+  ([code opts]
+   (collect-from-url (genre-url code) opts)))
+
+(defn search-tag
+  [{:keys [tag code query] :as opts}]
+  (let [tag (some-> tag clean)
+        preset (get tag-presets tag)
+        code (some-> (or code (:code preset)) str clean)
+        query (some-> (or query (:query preset) tag) clean)]
+    (cond
+      (seq code)
+      {:tag tag
+       :mode "genre"
+       :code code
+       :url (genre-url code)
+       :results (browse-genre code opts)}
+
+      (seq query)
+      {:tag tag
+       :mode "query"
+       :query query
+       :url (search-url query)
+       :results (search-titles query opts)}
+
+      :else
+      (throw (ex-info "search_netflix_tag requires tag, query, or code" {})))))
 
 (defn open-netflix
   ([] (open-netflix {}))
@@ -220,10 +300,7 @@
          conn (cdp/init-page! (cdp/open-page!))]
      (try
        (let [url (search-url title)]
-         (cdp/navigate! conn url)
-         (when (:switched (ensure-ready! conn (or profile-name profile_name)))
-           (cdp/navigate! conn url)
-           (cdp/wait-until! conn "document.readyState === 'complete' && !!document.body" 15000)))
+         (navigate-ready! conn url (or profile-name profile_name)))
        (Thread/sleep 1500)
        (let [results (cdp/eval! conn collect-results-js)
              opened (cdp/eval! conn (open-matching-card-js title))]

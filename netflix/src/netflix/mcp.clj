@@ -18,6 +18,28 @@
     :inputSchema {:type "object"
                   :properties {:url {:type "string"
                                       :default "https://www.netflix.com/login"}}}}
+   {:name "list_netflix_tags"
+    :description "List built-in Netflix tag presets. Presets map friendly tags to a search query or Netflix genre code."
+    :inputSchema {:type "object"
+                  :properties {}}}
+   {:name "search_netflix_tag"
+    :description "Search Netflix by a preset tag, a free-form query, or a Netflix genre code. Tags are convenience presets, not official Netflix tags."
+    :inputSchema {:type "object"
+                  :properties {:tag {:type "string"
+                                     :description "Preset tag name, for example korean_romance, indian_movies, feel_good, comedies."}
+                               :query {:type "string"
+                                       :description "Free-form Netflix search query. Used when tag/code is not supplied."}
+                               :code {:type "string"
+                                      :description "Netflix genre code, used with /browse/genre/{code}."}
+                               :max_results {:type "number" :default 10}
+                               :profile_name {:type "string" :default "Javier"}}}}
+   {:name "browse_netflix_genre"
+    :description "Browse Netflix by a numeric genre/category code using /browse/genre/{code}."
+    :inputSchema {:type "object"
+                  :properties {:code {:type "string"}
+                               :max_results {:type "number" :default 10}
+                               :profile_name {:type "string" :default "Javier"}}
+                  :required ["code"]}}
    {:name "add_to_my_list"
     :description "Search a Netflix title and click its Add to My List button. Set dry_run to true to only verify the match."
     :inputSchema {:type "object"
@@ -52,6 +74,15 @@
 
                    "open_netflix"
                    (web/open-netflix arguments)
+
+                   "list_netflix_tags"
+                   (web/list-tag-presets)
+
+                   "search_netflix_tag"
+                   (web/search-tag arguments)
+
+                   "browse_netflix_genre"
+                   (web/browse-genre (:code arguments) arguments)
 
                    "add_to_my_list"
                    (web/add-to-my-list (:title arguments) arguments)
