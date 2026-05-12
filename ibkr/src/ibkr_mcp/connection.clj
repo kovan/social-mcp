@@ -3,7 +3,9 @@
    Uses a global atom for state and promise-based async request/response."
   (:require [clojure.string :as str])
   (:import [com.ib.client EClientSocket EJavaSignal EReader Contract Order Decimal
-                          DefaultEWrapper ScannerSubscription TagValue WshEventData]))
+                          DefaultEWrapper ScannerSubscription TagValue WshEventData]
+           [java.io IOException]
+           [java.net InetSocketAddress Socket]))
 
 ;; ---------------------------------------------------------------------------
 ;; State
@@ -72,7 +74,11 @@
 
     ;; Connection
     (nextValidId [order-id]
-      (swap! state assoc :next-order-id order-id :connected? true))
+      (let [connect-promise (:connect-promise @state)]
+        (swap! state assoc :next-order-id order-id :connected? true)
+        (when connect-promise
+          (deliver connect-promise {:status :connected
+                                    :next-order-id order-id}))))
 
     (connectAck []
       (let [client (:client @state)]
@@ -80,7 +86,12 @@
           (.startAPI ^EClientSocket client))))
 
     (connectionClosed []
-      (swap! state assoc :connected? false)
+      (let [connect-promise (:connect-promise @state)]
+        (swap! state assoc :connected? false)
+        (when connect-promise
+          (deliver connect-promise
+                   {:status :failed
+                    :message "IBKR connection closed during API handshake"})))
       (binding [*out* *err*] (println "IBKR connection closed")))
 
     ;; Error — TWS API 10.x: error(int id, long reqId, int code, String msg, String json)
@@ -279,29 +290,56 @@
 
 (defn connected? [] (:connected? @state))
 
+(defn- port-open?
+  [host port timeout-ms]
+  (try
+    (with-open [socket (Socket.)]
+      (.connect socket (InetSocketAddress. host (int port)) (int timeout-ms))
+      true)
+    (catch IOException _
+      false)))
+
 (defn connect!
   [{:keys [host port client-id]
     :or   {host "127.0.0.1" port 7497 client-id 1}}]
   (if (connected?)
     {:status :already-connected}
-    (let [signal  (EJavaSignal.)
-          wrapper (make-wrapper)
-          client  (EClientSocket. wrapper signal)]
-      (swap! state assoc :client client :signal signal :connected? false)
-      (.eConnect client host (int port) (int client-id))
-      (let [reader (EReader. client signal)]
-        (.start reader)
-        (future
-          (while (.isConnected client)
-            (.waitForSignal signal)
-            (.processMsgs reader))))
-      ;; Wait for nextValidId callback
-      (Thread/sleep 2000)
-      (if (connected?)
-        {:status :connected :next-order-id (:next-order-id @state)}
-        (do (try (.eDisconnect client) (catch Exception _))
-            (swap! state assoc :client nil :signal nil)
-            {:status :failed :message "Connection timed out. Is TWS/Gateway running with API enabled?"})))))
+    (if-not (port-open? host port 300)
+      {:status :failed
+       :message (format "IBKR Gateway/TWS is not accepting TCP connections on %s:%s. Is it running with API enabled?"
+                        host port)}
+      (let [signal          (EJavaSignal.)
+            wrapper         (make-wrapper)
+            client          (EClientSocket. wrapper signal)
+            connect-promise (promise)]
+        (swap! state assoc
+               :client client
+               :signal signal
+               :connected? false
+               :connect-promise connect-promise)
+        (try
+          (.eConnect client host (int port) (int client-id))
+          (let [reader (EReader. client signal)]
+            (.start reader)
+            (future
+              (while (.isConnected client)
+                (.waitForSignal signal)
+                (.processMsgs reader))))
+          ;; Wait until the API handshake yields nextValidId, but return as soon as it does.
+          (let [result (deref connect-promise 2000 ::timeout)]
+            (swap! state dissoc :connect-promise)
+            (if (= result ::timeout)
+              (do (try (.eDisconnect client) (catch Exception _))
+                  (swap! state assoc :client nil :signal nil :connected? false)
+                  {:status :failed
+                   :message "Connection timed out waiting for IBKR API handshake. Is API access enabled?"})
+              result))
+          (catch Exception e
+            (try (.eDisconnect client) (catch Exception _))
+            (swap! state assoc :client nil :signal nil :connected? false)
+            (swap! state dissoc :connect-promise)
+            {:status :failed
+             :message (str "Connection failed: " (.getMessage e))}))))))
 
 (defn disconnect! []
   (when-let [client (:client @state)]
