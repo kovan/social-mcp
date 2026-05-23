@@ -211,6 +211,9 @@
     (when (not= 200 (:status resp))
       (throw (ex-info (str op-name " failed: HTTP " (:status resp))
                       {:body (subs (:body resp) 0 (min 500 (count (:body resp))))})))
+    (when (seq (get-in resp [:data :errors]))
+      (throw (ex-info (str op-name " failed: " (pr-str (get-in resp [:data :errors])))
+                      {:body (subs (:body resp) 0 (min 1000 (count (:body resp))))})))
     (:data resp)))
 
 (defn search-tweets
@@ -247,16 +250,22 @@
 (defn create-tweet
   "Post a new tweet or reply. Returns raw API response."
   [text & {:keys [reply-to-id]}]
-  (graphql-post "CreateTweet"
-    (cond-> {"tweet_text" text
-             "dark_request" false
-             "media" {"media_entities" []
-                      "possibly_sensitive" false}
-             "semantic_annotation_ids" []}
-      reply-to-id
-      (assoc "reply"
-             {"in_reply_to_tweet_id" reply-to-id
-              "exclude_reply_user_ids" []}))))
+  (let [data (graphql-post "CreateTweet"
+               (cond-> {"tweet_text" text
+                        "dark_request" false
+                        "media" {"media_entities" []
+                                 "possibly_sensitive" false}
+                        "semantic_annotation_ids" []}
+                 reply-to-id
+                 (assoc "reply"
+                        {"in_reply_to_tweet_id" reply-to-id
+                         "exclude_reply_user_ids" []})))
+        tweet-id (get-in data [:data :create_tweet :tweet_results :result :rest_id])]
+    (when-not tweet-id
+      (let [body (json/write-str data)]
+        (throw (ex-info "CreateTweet returned no tweet id; tweet was not confirmed as published"
+                        {:body (subs body 0 (min 1000 (count body)))}))))
+    data))
 
 (defn trending
   "Get trending topics. Returns raw API response."
