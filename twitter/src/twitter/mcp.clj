@@ -136,7 +136,10 @@
             (throw (ex-info (str "Unknown tool: " name) {})))]
       (respond id (tool-result result)))
     (catch Exception e
-      (respond id (tool-result (str "Error: " (.getMessage e)) :error? true)))))
+      (let [body (:body (ex-data e))
+            message (cond-> (str "Error: " (.getMessage e))
+                      body (str "\nResponse body: " body))]
+        (respond id (tool-result message :error? true))))))
 
 (defn- handle-message [msg]
   (let [{:keys [id method params]} msg]
