@@ -4,7 +4,8 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [twitter.cookies :as cookies])
-  (:import [java.net URLEncoder]))
+  (:import [java.net URLEncoder]
+           [java.util.concurrent ThreadLocalRandom]))
 
 ;; Public bearer token embedded in Twitter's web app JS (same for all users)
 (def ^:private bearer-token
@@ -17,6 +18,47 @@
 (def ^:private cookie-jar (atom nil))
 (def ^:private csrf-token (atom nil))
 (def ^:private query-ids (atom {}))
+(def ^:private last-create-at-ms (atom 0))
+(def ^:private create-cooldown-until-ms (atom 0))
+
+(def ^:private min-create-gap-ms 120000)
+(def ^:private create-jitter-min-ms 1000)
+(def ^:private create-jitter-max-ms 3000)
+(def ^:private create-cooldown-min-ms 900000)
+(def ^:private create-cooldown-max-ms 1800000)
+
+(defn- now-ms []
+  (System/currentTimeMillis))
+
+(defn- random-long [lo hi-inclusive]
+  (.nextLong (ThreadLocalRandom/current) lo (inc hi-inclusive)))
+
+(defn- set-create-cooldown! [reason]
+  (let [delay-ms (random-long create-cooldown-min-ms create-cooldown-max-ms)
+        until (+ (now-ms) delay-ms)]
+    (reset! create-cooldown-until-ms until)
+    (binding [*out* *err*]
+      (println (str "CreateTweet cooldown for " (long (/ delay-ms 1000))
+                    "s after " reason)))
+    until))
+
+(defn- wait-before-create-tweet! []
+  (let [now (now-ms)
+        cooldown-left (- @create-cooldown-until-ms now)]
+    (when (pos? cooldown-left)
+      (throw (ex-info (str "Twitter create cooldown active for "
+                           (long (Math/ceil (/ cooldown-left 1000.0)))
+                           "s after previous anti-automation response")
+                      {:cooldown-until-ms @create-cooldown-until-ms}))))
+  (let [now (now-ms)
+        gap-left (- min-create-gap-ms (- now @last-create-at-ms))
+        jitter (random-long create-jitter-min-ms create-jitter-max-ms)
+        delay-ms (+ (max 0 gap-left) jitter)]
+    (when (pos? delay-ms)
+      (binding [*out* *err*]
+        (println (str "Sleeping " delay-ms "ms before CreateTweet...")))
+      (Thread/sleep delay-ms))
+    (reset! last-create-at-ms (now-ms))))
 
 ;; --- Cookie init ---
 (defn- init-cookies! []
@@ -67,7 +109,7 @@
   [url & {:keys [method json-body form-body]}]
   (init-cookies!)
   (let [body-file (java.io.File/createTempFile "tw-api" ".json")
-        args (cond-> ["curl" "-sSL"
+        args (cond-> ["curl" "-sS"
                       "-b" @cookie-jar "-c" @cookie-jar
                       "-H" (str "Authorization: Bearer " bearer-token)
                       "-H" (str "x-csrf-token: " (or @csrf-token ""))
@@ -212,6 +254,9 @@
       (throw (ex-info (str op-name " failed: HTTP " (:status resp))
                       {:body (subs (:body resp) 0 (min 500 (count (:body resp))))})))
     (when (seq (get-in resp [:data :errors]))
+      (when (and (= op-name "CreateTweet")
+                 (some #(= 226 (:code %)) (get-in resp [:data :errors])))
+        (set-create-cooldown! "CreateTweet code 226"))
       (throw (ex-info (str op-name " failed: " (pr-str (get-in resp [:data :errors])))
                       {:body (subs (:body resp) 0 (min 1000 (count (:body resp))))})))
     (:data resp)))
@@ -250,6 +295,7 @@
 (defn create-tweet
   "Post a new tweet or reply. Returns raw API response."
   [text & {:keys [reply-to-id]}]
+  (wait-before-create-tweet!)
   (let [data (graphql-post "CreateTweet"
                (cond-> {"tweet_text" text
                         "dark_request" false
@@ -262,6 +308,7 @@
                          "exclude_reply_user_ids" []})))
         tweet-id (get-in data [:data :create_tweet :tweet_results :result :rest_id])]
     (when-not tweet-id
+      (set-create-cooldown! "empty CreateTweet tweet_results")
       (let [body (json/write-str data)]
         (throw (ex-info "CreateTweet returned no tweet id; tweet was not confirmed as published"
                         {:body (subs body 0 (min 1000 (count body)))}))))

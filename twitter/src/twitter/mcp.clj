@@ -3,8 +3,7 @@
             [clojure.string :as str]
             [twitter.api :as api]
             [twitter.format :as fmt])
-  (:import [java.io BufferedReader InputStreamReader]
-           [java.util.concurrent ThreadLocalRandom])
+  (:import [java.io BufferedReader InputStreamReader])
   (:gen-class))
 
 (def ^:private tools
@@ -88,12 +87,6 @@
             :else default)]
     (min (max n 1) 50)))
 
-(defn- sleep-before-create-tweet! []
-  (let [delay-ms (.nextLong (ThreadLocalRandom/current) 1000 3001)]
-    (binding [*out* *err*]
-      (println (str "Sleeping " delay-ms "ms before creating tweet...")))
-    (Thread/sleep delay-ms)))
-
 (defn- handle-tools-call [id {:keys [name arguments]}]
   (try
     (let [result
@@ -116,13 +109,11 @@
               (fmt/format-thread data))
 
             "post_tweet"
-            (let [_ (sleep-before-create-tweet!)
-                  data (api/create-tweet (:text arguments))]
+            (let [data (api/create-tweet (:text arguments))]
               (fmt/format-create-result data))
 
             "reply_tweet"
-            (let [_ (sleep-before-create-tweet!)
-                  data (api/create-tweet (:text arguments)
+            (let [data (api/create-tweet (:text arguments)
                          :reply-to-id (:tweet_id arguments))]
               (fmt/format-create-result data))
 
