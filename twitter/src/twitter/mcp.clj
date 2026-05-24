@@ -2,7 +2,8 @@
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
             [twitter.api :as api]
-            [twitter.format :as fmt])
+            [twitter.format :as fmt]
+            [twitter.web :as web])
   (:import [java.io BufferedReader InputStreamReader])
   (:gen-class))
 
@@ -40,6 +41,20 @@
                   :required ["text"]}}
    {:name "reply_tweet"
     :description "Reply to a tweet. Requires being logged in to Twitter/X in Chrome."
+    :inputSchema {:type "object"
+                  :properties {:tweet_id {:type "string"
+                                          :description "The numeric tweet ID to reply to"}
+                               :text {:type "string"
+                                      :description "Reply text (max 280 chars)"}}
+                  :required ["tweet_id" "text"]}}
+   {:name "post_tweet_web"
+    :description "Post a new tweet through the real X web UI and confirm the browser CreateTweet response. Use as fallback when API posting is suppressed."
+    :inputSchema {:type "object"
+                  :properties {:text {:type "string"
+                                      :description "Tweet text (max 280 chars)"}}
+                  :required ["text"]}}
+   {:name "reply_tweet_web"
+    :description "Reply to a tweet through the real X web UI and confirm the browser CreateTweet response. Use as fallback when API posting is suppressed."
     :inputSchema {:type "object"
                   :properties {:tweet_id {:type "string"
                                           :description "The numeric tweet ID to reply to"}
@@ -116,6 +131,15 @@
             (let [data (api/create-tweet (:text arguments)
                          :reply-to-id (:tweet_id arguments))]
               (fmt/format-create-result data))
+
+            "post_tweet_web"
+            (let [{:keys [url]} (web/create-tweet-web (:text arguments))]
+              (str "Tweet posted successfully via web UI.\n" url))
+
+            "reply_tweet_web"
+            (let [{:keys [url]} (web/create-tweet-web (:text arguments)
+                                  :reply-to-id (:tweet_id arguments))]
+              (str "Tweet posted successfully via web UI.\n" url))
 
             "notifications"
             (let [mentions-result (try

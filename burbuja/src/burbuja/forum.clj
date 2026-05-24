@@ -85,11 +85,36 @@
 ;; Sentinel for preserving newlines through Jsoup text extraction
 (def ^:private nl "\u2424")
 
+(defn- absolute-url [href]
+  (cond
+    (str/blank? href) nil
+    (str/starts-with? href "http") href
+    (str/starts-with? href "/") (str "https://www.burbuja.info" href)
+    :else href))
+
+(defn- post-content-link? [^Element a href]
+  (and (seq href)
+       (not (str/starts-with? href "javascript:"))
+       (not (str/includes? href "/inmobiliaria/goto/post"))
+       (not (str/includes? href "/inmobiliaria/members/"))
+       (not (.hasClass a "bbCodeBlock-sourceJump"))))
+
+(defn- annotate-links! [^Element root]
+  (doseq [^Element a (.select root "a[href]")]
+    (let [href (absolute-url (.attr a "href"))]
+      (when (post-content-link? a href)
+        (let [text (str/trim (.text a))]
+          (.text a (if (or (str/blank? text) (= text href))
+                     href
+                     (str text " (" href ")")))))))
+  root)
+
 (defn- extract-content
   "Extract readable text from a .bbWrapper element."
   [^Element wrapper]
   (when wrapper
-    (-> (.html wrapper)
+    (-> (doto (.clone wrapper) annotate-links!)
+        (.html)
         (str/replace #"(?i)<br\s*/?>" "\n")
         (str/replace #"(?i)</(?:p|div|li)>" "\n")
         (str/replace #"<[^>]+>" "")
