@@ -68,7 +68,12 @@
                                           :description "The burbuja.info username to search for"}
                                :max_results {:type "number"
                                              :description "Maximum number of results to return (default 20)"}}
-                  :required ["username"]}}])
+                  :required ["username"]}}
+   {:name "list_my_posts"
+    :description "List recent posts by the currently authenticated burbuja.info account. Uses the profile's recent-content feed, so newly published posts appear immediately with exact URLs."
+    :inputSchema {:type "object"
+                  :properties {:max_results {:type "number"
+                                             :description "Maximum number of results to return (default 20, max 100)"}}}}])
 
 (defn- respond [id result]
   {:jsonrpc "2.0" :id id :result result})
@@ -133,6 +138,11 @@
                                  (int (if (string? m) (parse-long m) m)))]
                      (forum/user-posts (:username arguments)
                                        :max-results (or max-r 20)))
+
+                   "list_my_posts"
+                   (let [max-r (when-let [m (:max_results arguments)]
+                                 (int (if (string? m) (parse-long m) m)))]
+                     (forum/my-posts :max-results (or max-r 20)))
 
                    (throw (ex-info (str "Unknown tool: " name) {})))]
       (respond id (tool-result result)))

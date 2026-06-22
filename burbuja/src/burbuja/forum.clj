@@ -414,6 +414,48 @@
        :date (or date "")
        :meta (or meta-text "")})))
 
+(defn- authenticated-profile-url []
+  (let [resp (get-page "https://www.burbuja.info/inmobiliaria/account/")]
+    (when-not (= 200 (:status resp))
+      (throw (ex-info (str "HTTP " (:status resp) " fetching account details") {})))
+    (let [doc (Jsoup/parse ^String (:body resp))
+          href (some-> (.selectFirst doc "a[href*=/members/][href*='.']")
+                       (.attr "href"))]
+      (when-not (re-find #"/inmobiliaria/members/[^/]+\.\d+/?$" (or href ""))
+        (throw (ex-info "No authenticated Burbuja profile found. Log in through Chrome first."
+                        {})))
+      (absolute-url href))))
+
+(defn my-posts
+  "List recent posts by the currently authenticated burbuja.info account."
+  [& {:keys [max-results] :or {max-results 20}}]
+  (let [max-results (-> max-results int (max 1) (min 100))
+        profile-url (authenticated-profile-url)
+        url (str (str/replace profile-url #"/?$" "") "/recent-content")
+        resp (get-page url)]
+    (when-not (= 200 (:status resp))
+      (throw (ex-info (str "HTTP " (:status resp) " fetching own recent posts") {})))
+    (let [doc (Jsoup/parse ^String (:body resp))
+          username (or (some-> (.selectFirst doc "h1.p-title-value") (.text)
+                               (str/replace #"^Contenido reciente por\s+" "") str/trim)
+                       "authenticated user")
+          posts (->> (.select doc "li.block-row")
+                     (map parse-search-item)
+                     (filter #(and (some? %) (seq (:url %))))
+                     (take max-results))]
+      (if (seq posts)
+        (str "# My posts — " username " (" (count posts) " results)\n\n"
+             (str/join "\n\n---\n\n"
+               (map-indexed
+                 (fn [i {:keys [title url snippet date meta]}]
+                   (str (inc i) ". **" title "**"
+                        (when (seq date) (str " (" date ")"))
+                        "\n   " url
+                        (when (seq snippet) (str "\n   " snippet))
+                        (when (seq meta) (str "\n   " meta))))
+                 posts)))
+        (str "# My posts — " username "\n\nNo posts found.")))))
+
 (defn user-posts
   "Fetch recent posts by a specific username via their member profile."
   [username & {:keys [max-results] :or {max-results 20}}]
