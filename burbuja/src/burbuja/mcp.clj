@@ -25,6 +25,16 @@
    {:name "list_trending"
     :description "List today's trending threads on burbuja.info. Returns thread titles and URLs."
     :inputSchema {:type "object" :properties {}}}
+   {:name "list_forum_threads"
+    :description "List threads from a specific burbuja.info forum/subforum, including author, replies, views, latest activity, and pagination."
+    :inputSchema {:type "object"
+                  :properties {:forum_url {:type "string"
+                                           :description "Full forum URL, e.g. https://www.burbuja.info/inmobiliaria/forums/historia/"}
+                               :page {:type "number"
+                                      :description "Forum page number (default 1)"}
+                               :max_results {:type "number"
+                                             :description "Maximum threads to return from the page (default 50, max 100)"}}
+                  :required ["forum_url"]}}
    {:name "reply_comment"
     :description "Reply to a specific post on burbuja.info, quoting the original post."
     :inputSchema {:type "object"
@@ -98,6 +108,15 @@
 
                    "list_trending"
                    (forum/list-trending)
+
+                   "list_forum_threads"
+                   (let [page (when-let [p (:page arguments)]
+                                (int (if (string? p) (parse-long p) p)))
+                         max-r (when-let [m (:max_results arguments)]
+                                 (int (if (string? m) (parse-long m) m)))]
+                     (forum/list-forum-threads (:forum_url arguments)
+                                                :page (or page 1)
+                                                :max-results (or max-r 50)))
 
                    "reply_comment"
                    (forum/reply-comment (:post_url arguments) (:message arguments)

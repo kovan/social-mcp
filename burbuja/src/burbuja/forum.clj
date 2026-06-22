@@ -229,6 +229,98 @@
                               (str (inc i) ". " title "\n   " url))
                             threads))))))
 
+(defn- canonical-thread-url [href]
+  (when (seq href)
+    (-> href
+        (str/replace #"(?:unread|latest)/?$" "")
+        absolute-url)))
+
+(defn- pair-value [^Element item label]
+  (some (fn [^Element pair]
+          (when (= label (str/trim (some-> (.selectFirst pair "dt") (.text))))
+            (str/trim (or (some-> (.selectFirst pair "dd") (.text)) ""))))
+        (.select item ".structItem-cell--meta dl.pairs")))
+
+(defn- parse-forum-thread [^Element item]
+  (let [title-link (.selectFirst item ".structItem-title a[href*=/temas/]")
+        href (some-> title-link (.attr "href"))
+        started-time (.selectFirst item ".structItem-startDate time")
+        latest-cell (.selectFirst item ".structItem-cell--latest")
+        latest-time (some-> latest-cell (.selectFirst "time"))
+        latest-author (some-> latest-cell (.selectFirst "a.username") (.text) str/trim)]
+    (when (and title-link (seq href))
+      {:title (str/trim (.text title-link))
+       :url (canonical-thread-url href)
+       :author (or (not-empty (str/trim (.attr item "data-author"))) "")
+       :started (or (not-empty (some-> started-time (.attr "datetime")))
+                    (some-> started-time (.text) str/trim)
+                    "")
+       :replies (or (pair-value item "Respuestas") "")
+       :views (or (pair-value item "Visitas") "")
+       :latest (or (not-empty (some-> latest-time (.attr "datetime")))
+                   (some-> latest-time (.text) str/trim)
+                   "")
+       :latest-author (or latest-author "")
+       :sticky? (some? (.selectFirst item ".structItem-status--sticky"))
+       :locked? (some? (.selectFirst item ".structItem-status--locked"))
+       :unread? (.hasClass item "is-unread")})))
+
+(defn list-forum-threads
+  "List threads from a burbuja.info forum/subforum page."
+  [forum-url & {:keys [page max-results]
+                :or {page 1 max-results 50}}]
+  (when-not (re-find #"/inmobiliaria/forums/" forum-url)
+    (throw (ex-info "forum_url must be a burbuja.info /inmobiliaria/forums/ URL"
+                    {:url forum-url})))
+  (let [page (max 1 (int page))
+        max-results (-> max-results int (max 1) (min 100))
+        base-url (str/replace forum-url #"(?:page-\d+)?/?$" "")
+        url (if (= page 1)
+              (str base-url "/")
+              (str base-url "/page-" page))
+        resp (get-page url)]
+    (when-not (= 200 (:status resp))
+      (throw (ex-info (str "HTTP " (:status resp) " fetching forum") {:url url})))
+    (let [doc (Jsoup/parse ^String (:body resp))
+          forum-title (or (some-> (.selectFirst doc "h1.p-title-value") (.text) str/trim)
+                          "Forum")
+          current-page (or (some-> (.selectFirst doc ".pageNav-page--current")
+                                   (.text) str/trim parse-long)
+                           page)
+          total-pages (or (some-> (.selectFirst doc ".pageNav-page:last-child a")
+                                  (.text) str/trim parse-long)
+                          current-page)
+          threads (->> (.select doc "div.structItem--thread")
+                       (map parse-forum-thread)
+                       (filter some?)
+                       (take max-results)
+                       vec)]
+      (str "# " forum-title "\n"
+           "Page " current-page " of " total-pages
+           " (" (count threads) " threads returned)\n\n"
+           (if (seq threads)
+             (str/join
+               "\n\n"
+               (map-indexed
+                 (fn [i {:keys [title url author started replies views latest
+                                latest-author sticky? locked? unread?]}]
+                   (str (inc i) ". "
+                        (when sticky? "[STICKY] ")
+                        (when locked? "[LOCKED] ")
+                        (when unread? "[UNREAD] ")
+                        title
+                        "\n   " url
+                        "\n   Started by " author
+                        (when (seq started) (str " — " started))
+                        (when (or (seq replies) (seq views))
+                          (str "\n   Replies: " replies " — Views: " views))
+                        (when (or (seq latest) (seq latest-author))
+                          (str "\n   Latest: " latest
+                               (when (seq latest-author)
+                                 (str " by " latest-author))))))
+                 threads))
+             "No threads found.")))))
+
 (defn read-thread [thread-url]
   (let [resp (get-page thread-url)
         _ (when-not (= 200 (:status resp))
