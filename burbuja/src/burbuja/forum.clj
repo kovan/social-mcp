@@ -109,11 +109,21 @@
                      (str text " (" href ")")))))))
   root)
 
+(defn- remove-noncontent-elements! [^Element root]
+  ;; XenForo injects JSON phrase dictionaries inside post wrappers for image
+  ;; lightboxes. Regex-based tag removal would keep the script body and expose
+  ;; that configuration as if it were authored post text.
+  (doseq [^Element el (.select root "script, style, noscript, template")]
+    (.remove el))
+  root)
+
 (defn- extract-content
   "Extract readable text from a .bbWrapper element."
   [^Element wrapper]
   (when wrapper
-    (-> (doto (.clone wrapper) annotate-links!)
+    (-> (doto (.clone wrapper)
+          remove-noncontent-elements!
+          annotate-links!)
         (.html)
         (str/replace #"(?i)<br\s*/?>" "\n")
         (str/replace #"(?i)</(?:p|div|li)>" "\n")
@@ -534,6 +544,73 @@
                         {:body (subs (or (:body create-resp) "")
                                      0 (min 500 (count (or (:body create-resp) ""))))}))))))
 
+(defn- quote-from-response [body]
+  (try
+    (let [parsed (json/read-str body :key-fn keyword)
+          quote (:quote parsed)]
+      (when (seq quote) quote))
+    (catch Exception _ nil)))
+
+(defn- parse-json-response [body]
+  (try
+    (json/read-str body :key-fn keyword)
+    (catch Exception _ nil)))
+
+(defn- summarize-json-value [v]
+  (cond
+    (string? v) v
+    (map? v) (str/join "; " (keep summarize-json-value (vals v)))
+    (sequential? v) (str/join "; " (keep summarize-json-value v))
+    (some? v) (str v)
+    :else nil))
+
+(defn- response-error-message [parsed]
+  (some-> (or (:errors parsed) (:error parsed))
+          summarize-json-value
+          str/trim
+          not-empty))
+
+(defn- successful-reply-response [body]
+  (let [parsed (parse-json-response body)
+        error (response-error-message parsed)]
+    (cond
+      (nil? parsed)
+      {:ok? false
+       :error "Reply returned a non-JSON response"}
+
+      (seq error)
+      {:ok? false
+       :error error}
+
+      (or (= "ok" (:status parsed))
+          (seq (:redirect parsed))
+          (seq (:message parsed))
+          (seq (:html parsed)))
+      {:ok? true
+       :redirect (:redirect parsed)
+       :message (:message parsed)}
+
+      :else
+      {:ok? false
+       :error (str "Unexpected reply response: "
+                   (subs body 0 (min 500 (count body))))})))
+
+(defn- fetch-native-quote [post-id csrf request-uri]
+  (let [quote-url
+        (str "https://www.burbuja.info/inmobiliaria/posts/" post-id "/quote"
+             "?_xfToken=" (URLEncoder/encode csrf "UTF-8")
+             "&_xfRequestUri=" (URLEncoder/encode request-uri "UTF-8")
+             "&_xfWithData=1"
+             "&_xfResponseType=json")
+        resp (curl-request quote-url :ajax? true)
+        quote (quote-from-response (:body resp))]
+    (when-not (and (= 200 (:status resp)) (seq quote))
+      (throw (ex-info (str "Could not fetch native XenForo quote for post " post-id)
+                      {:status (:status resp)
+                       :body (subs (or (:body resp) "")
+                                   0 (min 500 (count (or (:body resp) ""))))})))
+    quote))
+
 (defn reply-comment [post-url message & {:keys [expected-thread]}]
   (let [resp (get-page post-url)]
     (when-not (= 200 (:status resp))
@@ -557,26 +634,14 @@
                       (.selectFirst doc (str "#js-post-" post-id))
                       (throw (ex-info (str "Post " post-id " not found on page") {})))
           author (.attr post-el "data-author")
-          ;; Extract member ID for proper XenForo quote attribution
-          member-id (or (some-> (.selectFirst post-el "a[data-user-id]") (.attr "data-user-id"))
-                        (let [href (some-> (.selectFirst post-el "a.avatar") (.attr "href"))]
-                          (when href (second (re-find #"\.(\d+)/?$" href))))
-                        "")
-          ;; Extract content without nested quote blocks (removes "dijo:" / "Hacer clic para expandir..." artifacts)
-          raw-wrapper (.selectFirst post-el ".bbWrapper")
-          content (when raw-wrapper
-                    (let [clone (.clone raw-wrapper)]
-                      (doseq [el (.select clone ".bbCodeBlock")]
-                        (.remove el))
-                      (extract-content clone)))
-          ;; Truncate quoted content if very long
-          quoted (let [c (or content "")]
-                   (if (> (count c) 500)
-                     (str (subs c 0 497) "...")
-                     c))
           ;; CSRF token
           csrf (or (extract-csrf (:body resp))
                    (throw (ex-info "No CSRF token on page" {})))
+          request-uri (or canonical post-url)
+          ;; Ask XenForo for the original BBCode instead of rebuilding a quote
+          ;; from rendered HTML. This preserves formatting and avoids embedded
+          ;; viewer configuration such as js-extraPhrases/lightbox JSON.
+          native-quote (fetch-native-quote post-id csrf request-uri)
           ;; Reply URL from quick-reply form
           reply-form (.selectFirst doc "form.js-quickReply")
           reply-url (cond
@@ -594,13 +659,8 @@
                         (if thread-base
                           (str thread-base "add-reply")
                           (throw (ex-info "Cannot determine reply URL - thread may be locked" {})))))
-          ;; Build BBCode with quote
-          bbcode (str "[QUOTE=\"" author ", post: " post-id
-                      (when (seq member-id) (str ", member: " member-id))
-                      "\"]\n"
-                      quoted "\n"
-                      "[/QUOTE]\n\n"
-                      message)
+          ;; Append the reply to XenForo's exact native quote block.
+          bbcode (str native-quote "\n\n" message)
           ;; POST the reply
           reply-resp (post-form reply-url
                        {"message" bbcode
@@ -611,8 +671,15 @@
                         "_xfNoRedirect" "1"
                         "_xfResponseType" "json"}
                        :ajax? true)]
-      (if (<= 200 (:status reply-resp) 303)
-        (str "Reply posted successfully to post " post-id " by " author ".")
+      (if-not (<= 200 (:status reply-resp) 303)
         (throw (ex-info (str "Reply failed: HTTP " (:status reply-resp))
                         {:body (subs (or (:body reply-resp) "")
-                                     0 (min 500 (count (or (:body reply-resp) ""))))}))))))
+                                     0 (min 500 (count (or (:body reply-resp) ""))))}))
+        (let [{:keys [ok? error redirect]} (successful-reply-response (:body reply-resp))]
+          (if ok?
+            (str "Reply posted successfully to post " post-id " by " author "."
+                 (when (seq redirect)
+                   (str " " (absolute-url redirect))))
+            (throw (ex-info (str "Reply failed: " error)
+                            {:body (subs (or (:body reply-resp) "")
+                                         0 (min 500 (count (or (:body reply-resp) ""))))}))))))))
