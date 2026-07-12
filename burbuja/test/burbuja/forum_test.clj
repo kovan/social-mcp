@@ -62,6 +62,14 @@
 
   (testing "unexpected HTML responses are not treated as success"
     (is (= {:ok? false
-            :error "Reply returned a non-JSON response"}
+            :error "XenForo returned a non-JSON response"}
            (#'burbuja.forum/successful-reply-response
             "<html><body>Thread page</body></html>")))))
+
+(deftest post-id-from-url-parses-common-burbuja-urls
+  (is (= "58327648"
+         (#'burbuja.forum/post-id-from-url
+          "https://www.burbuja.info/inmobiliaria/posts/58327648/")))
+  (is (= "58327648"
+         (#'burbuja.forum/post-id-from-url
+          "https://www.burbuja.info/inmobiliaria/temas/example.1/post-58327648"))))

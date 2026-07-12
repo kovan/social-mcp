@@ -245,6 +245,30 @@
         (str/replace #"(?:unread|latest)/?$" "")
         absolute-url)))
 
+(defn- post-id-from-url [post-url]
+  (or (second (re-find #"post-(\d+)" post-url))
+      (second (re-find #"posts/(\d+)" post-url))
+      (throw (ex-info "Cannot extract post ID from URL" {:url post-url}))))
+
+(defn- validate-expected-thread! [post-id canonical expected-thread]
+  (when (and expected-thread canonical)
+    (let [actual-thread (second (re-find #"(.*?/temas/[^/]+/)" canonical))
+          expected-base (second (re-find #"(.*?/temas/[^/]+)" expected-thread))]
+      (when (and actual-thread expected-base
+                 (not (str/starts-with? actual-thread expected-base)))
+        (throw (ex-info (str "Post " post-id " belongs to a different thread. Expected: "
+                             expected-thread " but post is in: " actual-thread)
+                        {:expected expected-thread :actual actual-thread}))))))
+
+(defn- form-action-url [^Element form fallback-url]
+  (let [action (some-> form (.attr "action"))]
+    (if (str/blank? action)
+      fallback-url
+      (absolute-url action))))
+
+(defn- input-value [^Element form name]
+  (some-> (.selectFirst form (str "input[name=" name "]")) (.attr "value")))
+
 (defn- pair-value [^Element item label]
   (some (fn [^Element pair]
           (when (= label (str/trim (some-> (.selectFirst pair "dt") (.text))))
@@ -365,9 +389,7 @@
     (when-not (= 200 (:status resp))
       (throw (ex-info (str "HTTP " (:status resp) " fetching post") {:url post-url})))
     (let [doc (Jsoup/parse ^String (:body resp))
-          post-id (or (second (re-find #"post-(\d+)" post-url))
-                      (second (re-find #"posts/(\d+)" post-url))
-                      (throw (ex-info "Cannot extract post ID from URL" {:url post-url})))
+          post-id (post-id-from-url post-url)
           csrf (or (extract-csrf (:body resp))
                    (throw (ex-info "No CSRF token on page" {})))
           delete-url (str "https://www.burbuja.info/inmobiliaria/posts/" post-id "/delete")
@@ -570,13 +592,13 @@
           str/trim
           not-empty))
 
-(defn- successful-reply-response [body]
+(defn- successful-xenforo-response [body]
   (let [parsed (parse-json-response body)
         error (response-error-message parsed)]
     (cond
       (nil? parsed)
       {:ok? false
-       :error "Reply returned a non-JSON response"}
+       :error "XenForo returned a non-JSON response"}
 
       (seq error)
       {:ok? false
@@ -592,8 +614,11 @@
 
       :else
       {:ok? false
-       :error (str "Unexpected reply response: "
+       :error (str "Unexpected XenForo response: "
                    (subs body 0 (min 500 (count body))))})))
+
+(defn- successful-reply-response [body]
+  (successful-xenforo-response body))
 
 (defn- fetch-native-quote [post-id csrf request-uri]
   (let [quote-url
@@ -611,24 +636,70 @@
                                    0 (min 500 (count (or (:body resp) ""))))})))
     quote))
 
+(defn edit-post [post-url message & {:keys [expected-thread]}]
+  (let [resp (get-page post-url)]
+    (when-not (= 200 (:status resp))
+      (throw (ex-info (str "HTTP " (:status resp) " fetching post") {:url post-url})))
+    (let [doc (Jsoup/parse ^String (:body resp))
+          post-id (post-id-from-url post-url)
+          canonical (some-> (.selectFirst doc "link[rel=canonical]") (.attr "href"))
+          _ (validate-expected-thread! post-id canonical expected-thread)
+          request-uri (or canonical post-url)
+          default-edit-url (str "https://www.burbuja.info/inmobiliaria/posts/" post-id "/edit")
+          edit-link (or (some-> (.selectFirst doc (str "a[href*=\"/posts/" post-id "/edit\"]"))
+                                (.attr "href")
+                                absolute-url)
+                        default-edit-url)
+          edit-resp (get-page edit-link)]
+      (when-not (= 200 (:status edit-resp))
+        (throw (ex-info (str "HTTP " (:status edit-resp) " fetching edit form")
+                        {:url edit-link})))
+      (let [edit-doc (Jsoup/parse ^String (:body edit-resp))
+            edit-form (or (.selectFirst edit-doc (str "form[action*=\"/posts/" post-id "/edit\"]"))
+                          (.selectFirst edit-doc "form[action*=edit]")
+                          (throw (ex-info (str "Edit form for post " post-id " not found. "
+                                               "The post may not be editable by the authenticated user.")
+                                          {:url edit-link})))
+            csrf (or (input-value edit-form "_xfToken")
+                     (extract-csrf (:body edit-resp))
+                     (throw (ex-info "No CSRF token on edit form" {})))
+            edit-url (form-action-url edit-form default-edit-url)
+            attachment-hash (input-value edit-form "attachment_hash")
+            attachment-hash-combined (input-value edit-form "attachment_hash_combined")
+            params (cond-> {"message" message
+                            "_xfToken" csrf
+                            "_xfRequestUri" request-uri
+                            "_xfNoRedirect" "1"
+                            "_xfResponseType" "json"}
+                     (seq attachment-hash)
+                     (assoc "attachment_hash" attachment-hash)
+
+                     (seq attachment-hash-combined)
+                     (assoc "attachment_hash_combined" attachment-hash-combined))
+            save-resp (post-form edit-url params :ajax? true)]
+        (if-not (<= 200 (:status save-resp) 303)
+          (throw (ex-info (str "Edit failed: HTTP " (:status save-resp))
+                          {:body (subs (or (:body save-resp) "")
+                                       0 (min 500 (count (or (:body save-resp) ""))))}))
+          (let [{:keys [ok? error redirect]} (successful-xenforo-response (:body save-resp))]
+            (if ok?
+              (str "Post " post-id " edited successfully."
+                   (when (seq redirect)
+                     (str " " (absolute-url redirect))))
+              (throw (ex-info (str "Edit failed: " error)
+                              {:body (subs (or (:body save-resp) "")
+                                           0 (min 500 (count (or (:body save-resp) ""))))})))))))))
+
 (defn reply-comment [post-url message & {:keys [expected-thread]}]
   (let [resp (get-page post-url)]
     (when-not (= 200 (:status resp))
       (throw (ex-info (str "HTTP " (:status resp) " fetching post") {:url post-url})))
     (let [doc (Jsoup/parse ^String (:body resp))
           ;; Extract post ID from URL
-          post-id (or (second (re-find #"post-(\d+)" post-url))
-                      (second (re-find #"posts/(\d+)" post-url))
-                      (throw (ex-info "Cannot extract post ID from URL" {:url post-url})))
+          post-id (post-id-from-url post-url)
           ;; Validate thread if expected-thread is provided
           canonical (some-> (.selectFirst doc "link[rel=canonical]") (.attr "href"))
-          _ (when (and expected-thread canonical)
-              (let [actual-thread (second (re-find #"(.*?/temas/[^/]+/)" canonical))
-                    expected-base (second (re-find #"(.*?/temas/[^/]+)" expected-thread))]
-                (when (and actual-thread expected-base
-                           (not (str/starts-with? actual-thread expected-base)))
-                  (throw (ex-info (str "Post " post-id " belongs to a different thread. Expected: " expected-thread " but post is in: " actual-thread)
-                                  {:expected expected-thread :actual actual-thread})))))
+          _ (validate-expected-thread! post-id canonical expected-thread)
           ;; Find the post on the page
           post-el (or (.selectFirst doc (str "article[data-content=post-" post-id "]"))
                       (.selectFirst doc (str "#js-post-" post-id))

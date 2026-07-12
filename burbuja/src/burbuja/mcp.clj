@@ -61,6 +61,16 @@
                   :properties {:post_url {:type "string"
                                           :description "URL of the post to delete, e.g. https://www.burbuja.info/inmobiliaria/posts/67890/"}}
                   :required ["post_url"]}}
+   {:name "edit_post"
+    :description "Edit one of your own posts on burbuja.info. Replaces the full post body with the provided text."
+    :inputSchema {:type "object"
+                  :properties {:post_url {:type "string"
+                                          :description "URL of the post to edit, e.g. https://www.burbuja.info/inmobiliaria/posts/67890/"}
+                               :message {:type "string"
+                                         :description "New full post body text (BBCode supported)"}
+                               :thread_url {:type "string"
+                                            :description "Expected thread URL. If provided, the edit will fail if the post does not belong to this thread."}}
+                  :required ["post_url" "message"]}}
    {:name "user_posts"
     :description "Search for recent posts by a specific burbuja.info username. Returns post titles, snippets, dates, and URLs."
     :inputSchema {:type "object"
@@ -132,6 +142,10 @@
 
                    "delete_post"
                    (forum/delete-post (:post_url arguments))
+
+                   "edit_post"
+                   (forum/edit-post (:post_url arguments) (:message arguments)
+                                    :expected-thread (:thread_url arguments))
 
                    "user_posts"
                    (let [max-r (when-let [m (:max_results arguments)]
