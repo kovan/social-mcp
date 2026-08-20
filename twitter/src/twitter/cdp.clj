@@ -147,3 +147,80 @@
 (defn events [conn]
   @(:events conn))
 
+;; --- JS bundle discovery ---
+;; X stopped emitting <script src="..."> in the x.com HTML, so scraping the
+;; markup finds no bundles at all. The browser still loads them, so we ask the
+;; browser what it loaded instead of guessing.
+
+(def ^:private bundle-routes
+  ;; X code-splits per route: the chunk that defines TweetDetail is not the one
+  ;; that defines HomeTimeline, so we have to visit each area once.
+  ["https://x.com/home"
+   "https://x.com/search?q=test&src=typed_query"
+   "https://x.com/jack/status/20"])
+
+;; Installed before every navigation. X clears the Performance resource-timing
+;; buffer and removes chunk <script> tags after they load, so neither
+;; performance.getEntriesByType nor document.scripts sees the route chunks.
+;; Intercepting the src setter catches every bundle at the moment it is injected.
+(def ^:private bundle-hook-js
+  "(function(){
+     if (window.__bundlesHooked) return;
+     window.__bundlesHooked = true;
+     window.__bundles = [];
+     var push = function(v){ try { if (v) window.__bundles.push(String(v)); } catch(e){} };
+     var origCreate = document.createElement.bind(document);
+     document.createElement = function(tag){
+       var el = origCreate(tag);
+       if (String(tag).toLowerCase() === 'script') {
+         try {
+           var d = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
+           Object.defineProperty(el, 'src', {
+             configurable: true,
+             get: function(){ return d.get.call(this); },
+             set: function(v){ push(v); d.set.call(this, v); }
+           });
+         } catch(e){}
+       }
+       return el;
+     };
+   })();")
+
+(def ^:private collect-js
+  "(function(){
+     var out = (window.__bundles || []).slice();
+     try { Array.prototype.slice.call(document.scripts)
+             .forEach(function(s){ if (s.src) out.push(s.src); }); } catch(e){}
+     try { performance.getEntriesByType('resource')
+             .forEach(function(e){ out.push(e.name); }); } catch(e){}
+     return out.filter(function(n){
+       return n.indexOf('abs.twimg.com/responsive-web/') !== -1
+           && n.indexOf('.js') !== -1;
+     });
+   })()")
+
+(defn script-urls!
+  "Open X in the real browser and return every JS bundle URL it actually loads.
+   Visits several routes so route-split chunks are included."
+  []
+  (let [conn (open-page!)]
+    (try
+      (init-page! conn)
+      (call! conn "Page.addScriptToEvaluateOnNewDocument" {:source bundle-hook-js})
+      (->> bundle-routes
+           (mapcat (fn [route]
+                     (try
+                       (navigate! conn route)
+                       ;; give lazy route chunks time to be requested
+                       (wait-until! conn
+                                    "(window.__bundles||[]).length > 2"
+                                    15000)
+                       (or (eval! conn collect-js) [])
+                       (catch Exception e
+                         (binding [*out* *err*]
+                           (println "CDP route failed:" route (.getMessage e)))
+                         []))))
+           distinct
+           vec)
+      (finally (close! conn)))))
+

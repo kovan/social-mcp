@@ -3,6 +3,7 @@
   (:require [clojure.data.json :as json]
             [clojure.string :as str]
             [clojure.java.io :as io]
+            [twitter.cdp :as cdp]
             [twitter.cookies :as cookies])
   (:import [java.net URLEncoder]
            [java.util.concurrent ThreadLocalRandom]))
@@ -143,79 +144,150 @@
      :body body
      :data (try (json/read-str body :key-fn keyword) (catch Exception _ nil))}))
 
-;; --- Query ID extraction ---
-(defn- extract-query-ids! []
-  "Extract GraphQL query IDs from Twitter's JS bundles."
-  (when (empty? @query-ids)
-    (binding [*out* *err*] (println "Extracting Twitter GraphQL query IDs..."))
-    (let [page (:body (curl-raw "https://x.com"))
-          ;; Find JS bundle URLs
-          script-urls (->> (re-seq #"https://abs\.twimg\.com/responsive-web/client-web[^\s\"']*\.js" page)
-                           distinct)]
-      (binding [*out* *err*]
-        (println (str "Found " (count script-urls) " JS bundles")))
-      ;; Fetch bundles and extract query IDs
-      (doseq [script-url (take 15 script-urls)]
-        (try
-          (let [js (:body (curl-raw script-url))
-                ;; Pattern: queryId:"xxx",operationName:"YYY"
-                matches (re-seq #"queryId:\"([^\"]+)\",operationName:\"([^\"]+)\"" js)]
-            (doseq [[_ qid op-name] matches]
-              (swap! query-ids assoc op-name qid)))
-          (catch Exception _ nil)))
-      (binding [*out* *err*]
-        (println (str "Extracted " (count @query-ids) " query IDs"))
-        (doseq [op ["CreateTweet" "TweetDetail" "SearchTimeline"
-                     "HomeTimeline" "ExploreTrending"]]
-          (when-let [qid (get @query-ids op)]
-            (println (str "  " op " -> " qid))))))))
+;; --- GraphQL bundle introspection ---
+;;
+;; X no longer emits <script src="..."> in the x.com HTML, so the old approach
+;; (fetch the markup, regex out the bundle URLs) matches nothing: query-ids
+;; stays empty and every operation dies with
+;;   "Query ID not found for TweetDetail. Available: "
+;; with an empty list after "Available:".
+;;
+;; Ground truth is what the real browser loads, so discovery now goes through
+;; CDP. Everything downstream is unchanged: same regexes, same atoms.
 
-(defn- get-query-id [operation-name]
-  (extract-query-ids!)
-  (or (get @query-ids operation-name)
-      (throw (ex-info (str "Query ID not found for " operation-name
-                           ". Available: " (str/join ", " (keys @query-ids)))
-                      {}))))
-
-;; --- Feature flags and field toggles (extracted from JS bundles) ---
 (def ^:private op-metadata (atom {}))
 
-(defn- extract-op-metadata!
-  "Extract per-operation featureSwitches and fieldToggles from JS bundles."
-  []
-  (when (empty? @op-metadata)
-    (let [page (:body (curl-raw "https://x.com"))
-          script-urls (->> (re-seq #"https://abs\.twimg\.com/responsive-web/client-web[^\s\"']*\.js" page)
-                           distinct)]
-      (doseq [script-url (take 15 script-urls)]
-        (try
-          (let [js (:body (curl-raw script-url))
-                ;; Match full module exports with metadata
-                modules (re-seq #"e\.exports=\{queryId:\"([^\"]+)\",operationName:\"([^\"]+)\",operationType:\"[^\"]+\",metadata:\{featureSwitches:\[([^\]]*)\],fieldToggles:\[([^\]]*)\]" js)]
-            (doseq [[_ qid op-name features-str toggles-str] modules]
-              (let [features (->> (re-seq #"\"([^\"]+)\"" features-str)
-                                 (map second)
-                                 vec)
-                    toggles (->> (re-seq #"\"([^\"]+)\"" toggles-str)
-                                (map second)
-                                vec)]
-                (swap! op-metadata assoc op-name
-                       {:features features :toggles toggles}))))
-          (catch Exception _ nil)))
+(def ^:private cache-file
+  (io/file (System/getProperty "user.home")
+           ".cache" "social-mcp" "twitter-graphql.json"))
+
+(def ^:private cache-ttl-ms (* 24 60 60 1000))
+
+(def ^:private probe-ops
+  ["CreateTweet" "TweetDetail" "SearchTimeline" "HomeTimeline" "UserByScreenName"])
+
+(defn- load-cache! []
+  (try
+    (when (.exists cache-file)
+      (let [m (json/read-str (slurp cache-file))
+            saved-at (get m "saved-at")
+            qids (get m "query-ids")
+            meta (get m "op-metadata")]
+        (when (and (number? saved-at)
+                   (< (- (now-ms) saved-at) cache-ttl-ms)
+                   (seq qids))
+          {:query-ids qids
+           :op-metadata (into {} (for [[op v] meta]
+                                   [op {:features (vec (get v "features"))
+                                        :toggles (vec (get v "toggles"))}]))})))
+    (catch Exception _ nil)))
+
+(defn- save-cache! []
+  (try
+    (.mkdirs (.getParentFile cache-file))
+    (spit cache-file (json/write-str {"saved-at" (now-ms)
+                                      "query-ids" @query-ids
+                                      "op-metadata" @op-metadata}))
+    (catch Exception e
       (binding [*out* *err*]
-        (println (str "Extracted metadata for " (count @op-metadata) " operations"))))))
+        (println "Could not write query ID cache:" (.getMessage e))))))
+
+(defn- discover-bundle-urls []
+  (let [via-cdp (try
+                  (vec (cdp/script-urls!))
+                  (catch Throwable e
+                    (binding [*out* *err*]
+                      (println "CDP bundle discovery failed:" (.getMessage e)))
+                    []))]
+    (if (seq via-cdp)
+      via-cdp
+      ;; Last resort: the old HTML scrape, in case X ever puts the tags back.
+      (let [page (:body (curl-raw "https://x.com"))]
+        (->> (re-seq #"https://abs\.twimg\.com/responsive-web/[^\s\"']*\.js" page)
+             distinct
+             vec)))))
+
+(defn- prioritise-bundles
+  "Entry bundles first: main.js carries most of the GraphQL operation table, so
+   scan it before the route chunks in case the run is cut short."
+  [urls]
+  (vec (sort-by (fn [u] (cond
+                          (str/includes? u "/main.") 0
+                          (str/includes? u "/vendor.") 1
+                          (str/includes? u "/i18n/") 3
+                          :else 2))
+                urls)))
+
+(def ^:private qid-re
+  #"queryId:\"([^\"]+)\",operationName:\"([^\"]+)\"")
+
+(def ^:private op-meta-re
+  #"e\.exports=\{queryId:\"([^\"]+)\",operationName:\"([^\"]+)\",operationType:\"[^\"]+\",metadata:\{featureSwitches:\[([^\]]*)\],fieldToggles:\[([^\]]*)\]")
+
+(defn- scan-bundle!
+  "Pull both query IDs and per-operation metadata out of one bundle body."
+  [js]
+  (doseq [[_ qid op-name] (re-seq qid-re js)]
+    (swap! query-ids assoc op-name qid))
+  (doseq [[_ _ op-name features-str toggles-str] (re-seq op-meta-re js)]
+    (swap! op-metadata assoc op-name
+           {:features (mapv second (re-seq #"\"([^\"]+)\"" features-str))
+            :toggles (mapv second (re-seq #"\"([^\"]+)\"" toggles-str))})))
+
+(defn- ensure-bundles!
+  "Populate query-ids and op-metadata. Disk cache first, otherwise one
+   browser-driven scan. Each bundle is fetched exactly once and yields both
+   the query IDs and the feature/toggle metadata."
+  []
+  (when (empty? @query-ids)
+    (if-let [c (load-cache!)]
+      (do
+        (reset! query-ids (:query-ids c))
+        (reset! op-metadata (:op-metadata c))
+        (binding [*out* *err*]
+          (println (str "Loaded " (count @query-ids) " query IDs from cache"))))
+      (let [urls (prioritise-bundles (discover-bundle-urls))]
+        (binding [*out* *err*]
+          (println (str "Scanning " (count urls) " JS bundles for GraphQL operations...")))
+        (doseq [js (doall (pmap (fn [u] (try (:body (curl-raw u))
+                                             (catch Exception _ nil)))
+                                (take 200 urls)))]
+          (when (seq js) (scan-bundle! js)))
+        (binding [*out* *err*]
+          (println (str "Extracted " (count @query-ids) " query IDs, "
+                        (count @op-metadata) " with metadata"))
+          (doseq [op probe-ops]
+            (println (str "  " op " -> " (get @query-ids op "MISSING")))))
+        (when (seq @query-ids) (save-cache!))))))
+
+(defn refresh-bundles!
+  "Force a re-scan. Call this when X rotates its query IDs and calls start
+   failing with 404."
+  []
+  (reset! query-ids {})
+  (reset! op-metadata {})
+  (try (.delete cache-file) (catch Exception _ nil))
+  (ensure-bundles!)
+  {:query-ids (count @query-ids) :with-metadata (count @op-metadata)})
+
+(defn- get-query-id [operation-name]
+  (ensure-bundles!)
+  (or (get @query-ids operation-name)
+      (throw (ex-info (str "Query ID not found for " operation-name
+                           ". Available: " (str/join ", " (sort (keys @query-ids))))
+                      {}))))
 
 (defn- features-for
   "Get feature flags dict for an operation. All set to true by default (Twitter expects them present)."
   [op-name]
-  (extract-op-metadata!)
+  (ensure-bundles!)
   (let [feature-names (get-in @op-metadata [op-name :features] [])]
     (into {} (map (fn [f] [f true]) feature-names))))
 
 (defn- field-toggles-for
   "Get field toggles dict for an operation."
   [op-name]
-  (extract-op-metadata!)
+  (ensure-bundles!)
   (let [toggle-names (get-in @op-metadata [op-name :toggles] [])]
     (into {} (map (fn [t] [t false]) toggle-names))))
 
