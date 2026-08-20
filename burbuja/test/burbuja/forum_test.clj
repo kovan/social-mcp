@@ -1,5 +1,6 @@
 (ns burbuja.forum-test
   (:require [burbuja.forum]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]])
   (:import [org.jsoup Jsoup]))
 
@@ -136,3 +137,44 @@
   (testing "an alert with no thread, such as a new follower, yields nothing"
     (is (nil? (#'burbuja.forum/alert-thread-title
                (alert-li "<li><a class=\"username\">X</a> ahora te está siguiendo.</li>"))))))
+
+(defn- article [html]
+  (.selectFirst (Jsoup/parseBodyFragment html) "article"))
+
+(defn- article-html [thanks-meta]
+  (str "<article data-author=\"selenio\" data-content=\"post-58708859\">"
+       "<time datetime=\"2026-08-20T18:58:59+0200\"></time>"
+       "<div class=\"bbWrapper\">Texto del mensaje.</div>"
+       "<footer class=\"message-footer\">"
+       "<div class=\"message-microdata\">" thanks-meta "</div>"
+       "</footer></article>"))
+
+(deftest post-thanks-reads-the-running-total-from-microdata
+  (testing "the count comes from XenForo's schema.org footer"
+    (is (= 4 (#'burbuja.forum/post-thanks
+              (article (article-html "<meta itemprop=\"userInteractionCount\" content=\"4\" />"))))))
+
+  (testing "a post nobody thanked reports zero rather than nil"
+    (is (= 0 (#'burbuja.forum/post-thanks
+              (article (article-html "<meta itemprop=\"userInteractionCount\" content=\"0\" />"))))))
+
+  (testing "missing or unparseable microdata degrades to zero, never to an exception"
+    (is (= 0 (#'burbuja.forum/post-thanks (article (article-html "")))))
+    (is (= 0 (#'burbuja.forum/post-thanks
+              (article (article-html "<meta itemprop=\"userInteractionCount\" content=\"\" />")))))))
+
+(deftest format-post-shows-thanks-only-when-there-are-some
+  (testing "a thanked post carries the count in its header"
+    (is (str/includes?
+         (#'burbuja.forum/format-post
+          {:author "selenio" :post-id "58708859" :date "" :number "" :thanks 4 :content "x"})
+         "[post:58708859] [thanks:4]")))
+
+  (testing "zero and nil leave the header untouched"
+    (doseq [t [0 nil]]
+      (let [line (first (str/split-lines
+                         (#'burbuja.forum/format-post
+                          {:author "selenio" :post-id "58708859" :date "" :number ""
+                           :thanks t :content "x"})))]
+        (is (= "### selenio [post:58708859]" line))
+        (is (not (str/includes? line "thanks")))))))

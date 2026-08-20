@@ -137,6 +137,18 @@
         (str/replace #"\n{3,}" "\n\n")
         str/trim)))
 
+(defn- post-thanks
+  "How many thanks (the Zanx reaction) a post has.
+
+   Read from the schema.org microdata XenForo emits in the message footer,
+   which carries the running total. The alert feed only reports individual new
+   reactions, so it cannot answer this."
+  [^Element article]
+  (or (some-> (.selectFirst article ".message-microdata meta[itemprop=userInteractionCount]")
+              (.attr "content")
+              parse-long)
+      0))
+
 (defn- parse-post [^Element article]
   (let [author (.attr article "data-author")
         post-id (str/replace (.attr article "data-content") "post-" "")
@@ -148,13 +160,18 @@
      :post-id post-id
      :date date
      :number number
+     :thanks (post-thanks article)
      :content (or content "")}))
 
-(defn- format-post [{:keys [author post-id date number content]}]
+(defn- format-post [{:keys [author post-id date number thanks content]}]
   (str "### " (when (seq number) (str "#" number " - "))
        author
        (when (seq date) (str " (" date ")"))
-       " [post:" post-id "]\n\n"
+       " [post:" post-id "]"
+       ;; Omitted at zero: most posts have none and the noise would swamp the
+       ;; ones that do.
+       (when (and thanks (pos? thanks)) (str " [thanks:" thanks "]"))
+       "\n\n"
        content))
 
 ;; --- Alerts ---

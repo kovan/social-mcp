@@ -7,7 +7,7 @@
 
 (def ^:private tools
   [{:name "read_thread"
-    :description "Read a thread from burbuja.info forum. Returns posts with author, date, and content. Pass /page-N in the URL for other pages."
+    :description "Read a thread from burbuja.info forum. Returns posts with author, date, content, and the number of thanks each post has received when it has any. Pass /page-N in the URL for other pages."
     :inputSchema {:type "object"
                   :properties {:thread_url {:type "string"
                                             :description "Full thread URL, e.g. https://www.burbuja.info/inmobiliaria/temas/example.12345/"}}
