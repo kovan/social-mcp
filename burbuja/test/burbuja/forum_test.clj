@@ -178,3 +178,22 @@
                            :thanks t :content "x"})))]
         (is (= "### selenio [post:58708859]" line))
         (is (not (str/includes? line "thanks")))))))
+
+(deftest alert-epoch-comes-from-data-timestamp-not-data-time
+  (testing "data-timestamp is the epoch and is used"
+    (is (= 1787263038000
+           (#'burbuja.forum/alert-epoch-ms
+            (alert-li (str "<li><time data-timestamp=\"1787263038\" data-time=\"11:57 PM\" "
+                           "datetime=\"2026-08-20T23:57:18+0200\"></time></li>"))))))
+
+  (testing "data-time alone is a clock reading, never a number, and must not be used"
+    ;; Reading it silently produced nil ages, which let the hours filter pass
+    ;; every alert through.
+    (is (= 1787263038000
+           (#'burbuja.forum/alert-epoch-ms
+            (alert-li "<li><time data-time=\"11:57 PM\" datetime=\"2026-08-20T23:57:18+0200\"></time></li>")))))
+
+  (testing "no time element at all yields nil rather than throwing"
+    (is (nil? (#'burbuja.forum/alert-epoch-ms (alert-li "<li>sin hora</li>"))))
+    (is (nil? (#'burbuja.forum/alert-epoch-ms
+               (alert-li "<li><time data-time=\"11:57 PM\"></time></li>"))))))

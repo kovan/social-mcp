@@ -251,6 +251,27 @@
               (str/replace #"[\s.]+$" "")
               not-empty))))
 
+(def ^:private xf-datetime-format
+  ;; XenForo writes the offset without a colon ("+0200"), which the plain ISO
+  ;; parser rejects. Accept both spellings.
+  (java.time.format.DateTimeFormatter/ofPattern "yyyy-MM-dd'T'HH:mm:ss[XXX][XX]"))
+
+(defn- alert-epoch-ms
+  "When an alert happened, in epoch milliseconds.
+
+   XenForo puts the epoch in data-timestamp; data-time holds the clock time as
+   displayed (\"11:57 PM\"), which is not a number. Reading the wrong one is
+   silent: parse-long yields nil, the age becomes unknown and the hours filter
+   then lets every alert through."
+  [^Element li]
+  (when-let [^Element t (.selectFirst li "time")]
+    (or (some-> (.attr t "data-timestamp") not-empty parse-long (* 1000))
+        (try
+          (-> (java.time.OffsetDateTime/parse (.attr t "datetime") xf-datetime-format)
+              .toInstant
+              .toEpochMilli)
+          (catch Exception _ nil)))))
+
 (defn list-alerts
   ([] (list-alerts 3 nil))
   ([num-pages max-hours] (list-alerts num-pages max-hours nil))
@@ -276,10 +297,7 @@
                                      (some-> (.selectFirst li "a.username") (.attr "href")))
                             user (some-> (.selectFirst li "a.username") (.text))
                             time-el (some-> (.selectFirst li "time") (.attr "data-short"))
-                            epoch-str (some-> (.selectFirst li "time") (.attr "data-time"))
-                            epoch-ms (when (seq epoch-str)
-                                       (try (* (parse-long epoch-str) 1000)
-                                            (catch Exception _ nil)))
+                            epoch-ms (alert-epoch-ms li)
                             age-hours (when epoch-ms
                                         (/ (double (- now-ms epoch-ms)) 3600000.0))]
                       :when (contains? wanted kind)
