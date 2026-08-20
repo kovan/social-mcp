@@ -7,4 +7,4 @@
   {:extra-paths ["test"]
    :main-opts
    ["-e"
-    "(require 'burbuja.forum-test)(let [r (clojure.test/run-tests 'burbuja.forum-test)] (System/exit (+ (:fail r) (:error r))))"]}}}
+    "(require 'burbuja.forum-test 'burbuja.mcp-test)(let [r (clojure.test/run-tests 'burbuja.forum-test 'burbuja.mcp-test)] (System/exit (+ (:fail r) (:error r))))"]}}}

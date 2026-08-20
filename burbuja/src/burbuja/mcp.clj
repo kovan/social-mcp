@@ -95,6 +95,26 @@
   {:content [{:type "text" :text text}]
    :isError (boolean error?)})
 
+(defn- validate-tool-arguments! [name arguments]
+  (when-let [tool (some #(when (= name (:name %)) %) tools)]
+    (let [arguments (or arguments {})
+          required (get-in tool [:inputSchema :required])
+          missing (->> required
+                       (filter (fn [argument]
+                                 (let [value (get arguments (keyword argument))]
+                                   (or (nil? value)
+                                       (and (string? value) (str/blank? value))))))
+                       vec)]
+      (when (seq missing)
+        (throw (ex-info
+                 (str "Missing required argument"
+                      (when (< 1 (count missing)) "s")
+                      " for " name ": "
+                      (str/join ", " missing))
+                 {:type ::invalid-arguments
+                  :tool name
+                  :missing missing}))))))
+
 (defn- handle-initialize [id _params]
   (respond id
     {:protocolVersion "2024-11-05"
@@ -107,6 +127,7 @@
 
 (defn- handle-tools-call [id {:keys [name arguments]}]
   (try
+    (validate-tool-arguments! name arguments)
     (let [result (case name
                    "read_thread"
                    (forum/read-thread (:thread_url arguments))
@@ -160,6 +181,14 @@
 
                    (throw (ex-info (str "Unknown tool: " name) {})))]
       (respond id (tool-result result)))
+    (catch clojure.lang.ExceptionInfo e
+      (if (= ::invalid-arguments (:type (ex-data e)))
+        (respond id (tool-result (str "Error: " (.getMessage e)) :error? true))
+        (let [sw (java.io.StringWriter.)
+              pw (java.io.PrintWriter. sw)]
+          (.printStackTrace e pw)
+          (respond id (tool-result (str "Error: " (.getMessage e) "\n\n" (.toString sw))
+                                   :error? true)))))
     (catch Exception e
       (let [sw (java.io.StringWriter.)
             pw (java.io.PrintWriter. sw)]

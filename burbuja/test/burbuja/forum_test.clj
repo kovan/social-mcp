@@ -7,6 +7,12 @@
   (#'burbuja.forum/extract-content
    (.selectFirst (Jsoup/parseBodyFragment html) ".bbWrapper")))
 
+(deftest curl-request-rejects-invalid-url-before-starting-a-process
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo
+       #"Request URL must be a non-blank string"
+       (#'burbuja.forum/curl-request nil))))
+
 (deftest extract-content-ignores-lightbox-configuration
   (testing "embedded XenForo lightbox phrases are not treated as post text"
     (let [content

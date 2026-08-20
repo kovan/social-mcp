@@ -37,6 +37,8 @@
       (println (str "Loaded " (count cks) " cookies for burbuja.info")))))
 
 (defn- curl-request [url & {:keys [method params ajax?]}]
+  (when-not (and (string? url) (not (str/blank? url)))
+    (throw (ex-info "Request URL must be a non-blank string" {:url url})))
   (when (nil? @cookie-jar) (init-cookies!))
   (let [body-file (java.io.File/createTempFile "curl-body" ".html")
         args (cond-> ["curl" "-sSL"
