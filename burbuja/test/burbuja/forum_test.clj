@@ -83,7 +83,7 @@
 (defn- alert-li [html]
   (.selectFirst (Jsoup/parseBodyFragment html) "li"))
 
-(deftest parse-alert-types-defaults-to-quotes-and-likes
+(deftest parse-alert-types-defaults-to-quotes-and-thanks
   (testing "omitting the filter keeps the two kinds that need an answer"
     (is (= #{:quote :reaction} (#'burbuja.forum/parse-alert-types nil)))
     (is (= #{:quote :reaction} (#'burbuja.forum/parse-alert-types ""))))

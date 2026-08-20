@@ -165,8 +165,8 @@
 ;; the markup to key off.
 ;;
 ;; The single reaction burbuja has enabled is id 1, named "Zanx" (the 👍 emoji),
-;; which is what the forum calls a "me gusta". The name is read from the alert
-;; itself rather than hard-coded, so extra reactions would still be reported.
+;; the forum's spelling of "thanks". The name is read from the alert itself
+;; rather than hard-coded, so extra reactions would still be reported.
 
 (def ^:private alert-type-patterns
   [[:quote    "citó tu mensaje"]
@@ -175,7 +175,7 @@
    [:follow   "te está siguiendo"]])
 
 (def ^:private alert-type-labels
-  {:quote "quotes" :reaction "me gusta" :reply "thread replies"
+  {:quote "quotes" :reaction "thanks" :reply "thread replies"
    :follow "new followers" :other "other"})
 
 (defn- alert-type [body]

@@ -13,14 +13,14 @@
                                             :description "Full thread URL, e.g. https://www.burbuja.info/inmobiliaria/temas/example.12345/"}}
                   :required ["thread_url"]}}
    {:name "list_alerts"
-    :description "List recent alerts from burbuja.info, grouped by kind: quotes of your posts, likes (\"me gusta\", the Zanx reaction) received, replies to threads you follow, and new followers. Defaults to quotes and likes."
+    :description "List recent alerts from burbuja.info, grouped by kind: quotes of your posts, thanks received (the Zanx reaction, burbuja's equivalent of a like), replies to threads you follow, and new followers. Defaults to quotes and thanks."
     :inputSchema {:type "object"
                   :properties {:pages {:type "number"
                                        :description "Number of alert pages to fetch (default 3, max 10)"}
                                :hours {:type "number"
                                        :description "Only show alerts from the last N hours (optional, omit for all)"}
                                :types {:type "string"
-                                       :description "Comma-separated alert kinds to include: quote, reaction (likes / me gusta), reply, follow, or all. Default \"quote,reaction\"."}}}}
+                                       :description "Comma-separated alert kinds to include: quote, reaction (thanks), reply, follow, or all. Default \"quote,reaction\"."}}}}
    {:name "list_new_posts"
     :description "List threads with new posts on burbuja.info (whats-new feed). Returns thread titles and URLs."
     :inputSchema {:type "object" :properties {}}}
