@@ -157,10 +157,89 @@
        " [post:" post-id "]\n\n"
        content))
 
+;; --- Alerts ---
+;;
+;; burbuja.info runs XenForo, whose alert feed mixes several kinds of event in
+;; one list. Each kind is only identifiable by its Spanish wording, so the
+;; classification below is text-based on purpose: there is no type attribute on
+;; the markup to key off.
+;;
+;; The single reaction burbuja has enabled is id 1, named "Zanx" (the 👍 emoji),
+;; which is what the forum calls a "me gusta". The name is read from the alert
+;; itself rather than hard-coded, so extra reactions would still be reported.
+
+(def ^:private alert-type-patterns
+  [[:quote    "citó tu mensaje"]
+   [:reaction "reaccionó a"]
+   [:reply    "respondió al tema"]
+   [:follow   "te está siguiendo"]])
+
+(def ^:private alert-type-labels
+  {:quote "quotes" :reaction "me gusta" :reply "thread replies"
+   :follow "new followers" :other "other"})
+
+(defn- alert-type [body]
+  (or (some (fn [[t pattern]] (when (str/includes? body pattern) t))
+            alert-type-patterns)
+      :other))
+
+(defn- parse-alert-types
+  "Accepts a keyword, a string like \"quote,reaction\", a collection, or nil.
+   Returns a set of type keywords; \"all\" expands to every known type."
+  [types]
+  (let [known (into #{:other} (map first alert-type-patterns))
+        raw (cond
+              (nil? types) nil
+              (keyword? types) [types]
+              (string? types) (str/split types #"[,\s]+")
+              (sequential? types) types
+              :else [types])
+        parsed (into #{} (comp (map #(-> % name str/trim str/lower-case))
+                               (remove str/blank?)
+                               (map keyword))
+                     raw)]
+    (cond
+      (empty? parsed) #{:quote :reaction}
+      (contains? parsed :all) known
+      :else parsed)))
+
+(defn- reaction-name
+  "Name of the reaction in a reaction alert, e.g. \"Zanx\". Read from the
+   emoji's alt text, which is the only place it appears unabbreviated."
+  [^Element li]
+  (or (some-> (.selectFirst li ".reaction img[alt]") (.attr "alt") str/trim not-empty)
+      (some-> (.selectFirst li ".reaction-text") (.text) str/trim not-empty)))
+
+(defn- alert-thread-title
+  "Thread title carried by an alert.
+
+   Parsed from a cleaned copy of the element rather than from the raw text:
+   the timestamp and the reaction badge are appended to the same string, and
+   thread titles routinely contain periods (\"Perú - 7.2 en la región...\"), so
+   anchoring a regex on punctuation truncates them. Stripping those nodes first
+   leaves the title as the tail of the sentence."
+  [^Element li]
+  (let [clone (.clone li)]
+    (doseq [^Element el (.select clone "time, .contentRow-minor, .reaction, .u-srOnly")]
+      (.remove el))
+    (let [text (-> (.text clone)
+                   (str/replace #"\s+" " ")
+                   ;; Reply alerts append a fixed XenForo sentence after the
+                   ;; title; it is boilerplate, not part of the thread name.
+                   (str/replace #"\.?\s*Puede haber más mensajes después de esto\.?" "")
+                   str/trim)]
+      (some-> (or (second (re-find #"en el tema (.+?)\s*(?:\bcon\b\s*)?\.?\s*$" text))
+                  (second (re-find #"respondió al tema (.+?)\s*\.?\s*$" text)))
+              str/trim
+              (str/replace #"[\s.]+$" "")
+              not-empty))))
+
 (defn list-alerts
   ([] (list-alerts 3 nil))
-  ([num-pages max-hours]
+  ([num-pages max-hours] (list-alerts num-pages max-hours nil))
+  ([num-pages max-hours types]
    (let [base "https://www.burbuja.info/inmobiliaria/account/alerts"
+         wanted (parse-alert-types types)
          now-ms (System/currentTimeMillis)
          docs (for [p (range 1 (inc num-pages))]
                 (let [url (if (= p 1) base (str base "?page=" p))
@@ -169,11 +248,15 @@
                     (Jsoup/parse ^String (:body resp)))))
          alerts (for [doc docs
                       :when doc
-                      li (.select doc "li[data-alert-id]")
+                      ^Element li (.select doc "li[data-alert-id]")
                       :let [body (.text li)
-                            is-quote (str/includes? body "citó tu mensaje")
+                            kind (alert-type body)
                             post-link (some-> (.selectFirst li "a.fauxBlockLink-blockLink")
                                               (.attr "href"))
+                            ;; Follows have no post to link to, so fall back to
+                            ;; the member profile rather than dropping them.
+                            link (or post-link
+                                     (some-> (.selectFirst li "a.username") (.attr "href")))
                             user (some-> (.selectFirst li "a.username") (.text))
                             time-el (some-> (.selectFirst li "time") (.attr "data-short"))
                             epoch-str (some-> (.selectFirst li "time") (.attr "data-time"))
@@ -182,19 +265,39 @@
                                             (catch Exception _ nil)))
                             age-hours (when epoch-ms
                                         (/ (double (- now-ms epoch-ms)) 3600000.0))]
-                      :when (and is-quote (seq post-link))
+                      :when (contains? wanted kind)
+                      :when (seq link)
                       :when (or (nil? max-hours)
                                 (nil? age-hours)
                                 (<= age-hours max-hours))]
-                  {:user (or user "?")
+                  {:kind kind
+                   :user (or user "?")
                    :time (or time-el "?")
-                   :url (if (str/starts-with? post-link "http")
-                          post-link
-                          (str "https://www.burbuja.info" post-link))})]
-     (str "# Alerts (" (count alerts) " quotes)\n\n"
-          (str/join "\n" (map (fn [{:keys [user time url]}]
-                                (str "[" time "] " user ": " url))
-                              alerts))))))
+                   :reaction (when (= :reaction kind) (reaction-name li))
+                   :thread (alert-thread-title li)
+                   :url (if (str/starts-with? link "http")
+                          link
+                          (str "https://www.burbuja.info" link))})
+         alerts (vec alerts)
+         by-kind (group-by :kind alerts)
+         ;; Stable, meaningful order rather than whatever group-by hands back.
+         order (concat (map first alert-type-patterns) [:other])
+         sections (for [k order
+                        :let [items (get by-kind k)]
+                        :when (seq items)]
+                    (str "## " (str/capitalize (get alert-type-labels k (name k)))
+                         " (" (count items) ")\n\n"
+                         (str/join "\n"
+                                   (map (fn [{:keys [user time reaction thread url]}]
+                                          (str "[" time "] " user
+                                               (when reaction (str " (" reaction ")"))
+                                               ": " url
+                                               (when thread (str "\n    " thread))))
+                                        items))))]
+     (str "# Alerts (" (count alerts) ")\n\n"
+          (if (seq sections)
+            (str/join "\n\n" sections)
+            "No alerts of the requested types.")))))
 
 (defn list-new-posts []
   (let [resp (get-page "https://www.burbuja.info/inmobiliaria/whats-new/posts/")]

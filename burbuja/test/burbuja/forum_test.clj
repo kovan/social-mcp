@@ -79,3 +79,60 @@
   (is (= "58327648"
          (#'burbuja.forum/post-id-from-url
           "https://www.burbuja.info/inmobiliaria/temas/example.1/post-58327648"))))
+
+(defn- alert-li [html]
+  (.selectFirst (Jsoup/parseBodyFragment html) "li"))
+
+(deftest parse-alert-types-defaults-to-quotes-and-likes
+  (testing "omitting the filter keeps the two kinds that need an answer"
+    (is (= #{:quote :reaction} (#'burbuja.forum/parse-alert-types nil)))
+    (is (= #{:quote :reaction} (#'burbuja.forum/parse-alert-types ""))))
+
+  (testing "accepts strings, keywords and collections, case and space insensitive"
+    (is (= #{:reaction} (#'burbuja.forum/parse-alert-types "reaction")))
+    (is (= #{:reaction} (#'burbuja.forum/parse-alert-types :reaction)))
+    (is (= #{:quote} (#'burbuja.forum/parse-alert-types ["quote"])))
+    (is (= #{:quote :reaction} (#'burbuja.forum/parse-alert-types " REACTION , quote "))))
+
+  (testing "all expands to every known kind"
+    (is (= #{:quote :reaction :reply :follow :other}
+           (#'burbuja.forum/parse-alert-types "all")))))
+
+(deftest alert-type-classifies-the-spanish-wording
+  (is (= :quote (#'burbuja.forum/alert-type "X citó tu mensaje en el tema Y.")))
+  (is (= :reaction (#'burbuja.forum/alert-type "X reaccionó a tu mensaje en el tema Y con Zanx.")))
+  (is (= :reply (#'burbuja.forum/alert-type "X respondió al tema Y.")))
+  (is (= :follow (#'burbuja.forum/alert-type "X ahora te está siguiendo.")))
+  (is (= :other (#'burbuja.forum/alert-type "X hizo algo que no conocemos."))))
+
+(deftest reaction-name-comes-from-the-emoji-alt-text
+  (is (= "Zanx"
+         (#'burbuja.forum/reaction-name
+          (alert-li (str "<li><span class=\"reaction\">"
+                         "<img alt=\"Zanx\" title=\"Zanx\" />"
+                         "<span class=\"reaction-text\">Zanx</span></span></li>")))))
+  (is (nil? (#'burbuja.forum/reaction-name (alert-li "<li>sin reacción</li>")))))
+
+(deftest alert-thread-title-survives-periods-and-badges
+  (testing "a title containing a decimal point is not truncated at it"
+    (is (= "URGENTE - Fuerte terremoto sacude Perú - 7.2 en la región andina de Ayacucho"
+           (#'burbuja.forum/alert-thread-title
+            (alert-li (str "<li><a class=\"username\">Pato</a> reaccionó a "
+                           "<a class=\"fauxBlockLink-blockLink\">tu mensaje</a> en el tema "
+                           "URGENTE - Fuerte terremoto sacude Perú - 7.2 en la región andina de Ayacucho con "
+                           "<span class=\"reaction\"><img alt=\"Zanx\" /></span>."
+                           "<div class=\"contentRow-minor\"><time data-short=\"2m\">hace 2 minutos</time></div>"
+                           "</li>"))))))
+
+  (testing "the trailing XenForo notice is not mistaken for part of the title"
+    (is (= "Se acabó!: los bancos cierran el grifo hipotecario!!"
+           (#'burbuja.forum/alert-thread-title
+            (alert-li (str "<li><a class=\"username\">eltonelero</a> respondió al tema "
+                           "Se acabó!: los bancos cierran el grifo hipotecario!!. "
+                           "Puede haber más mensajes después de esto."
+                           "<div class=\"contentRow-minor\"><time data-short=\"1h\">hace 1 hora</time></div>"
+                           "</li>"))))))
+
+  (testing "an alert with no thread, such as a new follower, yields nothing"
+    (is (nil? (#'burbuja.forum/alert-thread-title
+               (alert-li "<li><a class=\"username\">X</a> ahora te está siguiendo.</li>"))))))
