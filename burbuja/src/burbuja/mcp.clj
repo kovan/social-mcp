@@ -85,7 +85,24 @@
     :description "List recent posts by the currently authenticated burbuja.info account. Uses the profile's recent-content feed, so newly published posts appear immediately with exact URLs."
     :inputSchema {:type "object"
                   :properties {:max_results {:type "number"
-                                             :description "Maximum number of results to return (default 20, max 100)"}}}}])
+                                             :description "Maximum number of results to return (default 20, max 100)"}}}}
+   {:name "list_conversations"
+    :description "List your private conversations (mensajes privados) on burbuja.info, with title, participants, latest activity, and unread status."
+    :inputSchema {:type "object" :properties {}}}
+   {:name "read_conversation"
+    :description "Read a private conversation (mensaje privado) on burbuja.info. Returns messages with author, date, and content. Pass /page-N in the URL for other pages."
+    :inputSchema {:type "object"
+                  :properties {:conversation_url {:type "string"
+                                                   :description "Full conversation URL, e.g. https://www.burbuja.info/inmobiliaria/conversations/example.12345/"}}
+                  :required ["conversation_url"]}}
+   {:name "reply_conversation"
+    :description "Reply to a private conversation (mensaje privado) on burbuja.info."
+    :inputSchema {:type "object"
+                  :properties {:conversation_url {:type "string"
+                                                   :description "Full conversation URL, e.g. https://www.burbuja.info/inmobiliaria/conversations/example.12345/"}
+                               :message {:type "string"
+                                         :description "Reply text (BBCode supported)"}}
+                  :required ["conversation_url" "message"]}}])
 
 (defn- respond [id result]
   {:jsonrpc "2.0" :id id :result result})
@@ -180,6 +197,15 @@
                    (let [max-r (when-let [m (:max_results arguments)]
                                  (int (if (string? m) (parse-long m) m)))]
                      (forum/my-posts :max-results (or max-r 20)))
+
+                   "list_conversations"
+                   (forum/list-conversations)
+
+                   "read_conversation"
+                   (forum/read-conversation (:conversation_url arguments))
+
+                   "reply_conversation"
+                   (forum/reply-conversation (:conversation_url arguments) (:message arguments))
 
                    (throw (ex-info (str "Unknown tool: " name) {})))]
       (respond id (tool-result result)))

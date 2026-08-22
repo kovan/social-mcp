@@ -197,3 +197,61 @@
     (is (nil? (#'burbuja.forum/alert-epoch-ms (alert-li "<li>sin hora</li>"))))
     (is (nil? (#'burbuja.forum/alert-epoch-ms
                (alert-li "<li><time data-time=\"11:57 PM\"></time></li>"))))))
+
+(deftest parse-post-extracts-id-regardless-of-shape
+  (testing "thread posts use a data-content=post-N attribute"
+    (is (= "58708859" (:post-id (#'burbuja.forum/parse-post (article (article-html "")))))))
+
+  (testing "conversation messages have no data-content, only a #convMessage-N anchor"
+    (is (= "1197400"
+           (:post-id (#'burbuja.forum/parse-post
+                      (article (str "<article data-author=\"selenio\">"
+                                    "<span class=\"u-anchorTarget\" id=\"convMessage-1197400\"></span>"
+                                    "<time datetime=\"2026-08-20T18:58:59+0200\"></time>"
+                                    "<div class=\"bbWrapper\">Hola.</div>"
+                                    "</article>"))))))))
+
+(defn- struct-item [html]
+  (.selectFirst (Jsoup/parseBodyFragment html) "div"))
+
+;; Fixture shaped like the real markup burbuja.info serves: the title is the
+;; anchor itself (a.structItem-title), the conversation route is
+;; direct-messages (not conversations), and participants live as a.username
+;; links inside .structItem-parts.
+(defn- conversation-item-html [& {:keys [unread? href]
+                                   :or {unread? true href "/inmobiliaria/direct-messages/tu-naturaleza.373726/unread"}}]
+  (str "<div class=\"structItem structItem--conversation" (when unread? " is-unread") "\" data-author=\"Asurbanipal\">"
+       "<div class=\"structItem-cell structItem-cell--main\">"
+       "<a href=\"" href "\" class=\"structItem-title\">Tu naturaleza</a>"
+       "<div class=\"structItem-minor\">"
+       "<ul class=\"structItem-parts\"><li>"
+       "<ul class=\"listInline\">"
+       "<li><a class=\"username\" title=\"Direct message starter\">Asurbanipal</a></li>"
+       "<li><a class=\"username\">chatgpt-5.5</a></li>"
+       "</ul></li></ul>"
+       "</div>"
+       "</div>"
+       "<div class=\"structItem-cell structItem-cell--latest\">"
+       "<time datetime=\"2026-08-22T07:38:30+0200\">Hoy a la(s) 7:38 AM</time>"
+       "</div>"
+       "</div>"))
+
+(deftest parse-conversation-item-extracts-title-participants-and-unread
+  (testing "a normal, unread conversation, with the /unread suffix stripped from the URL"
+    (is (= {:title "Tu naturaleza"
+            :url "https://www.burbuja.info/inmobiliaria/direct-messages/tu-naturaleza.373726/"
+            :participants "Asurbanipal, chatgpt-5.5"
+            :latest "2026-08-22T07:38:30+0200"
+            :unread? true}
+           (#'burbuja.forum/parse-conversation-item
+            (struct-item (conversation-item-html))))))
+
+  (testing "a read conversation reports unread? false"
+    (is (false? (:unread?
+                 (#'burbuja.forum/parse-conversation-item
+                  (struct-item (conversation-item-html :unread? false
+                                                        :href "/inmobiliaria/direct-messages/otro.1/")))))))
+
+  (testing "an item without a title link is not a conversation row"
+    (is (nil? (#'burbuja.forum/parse-conversation-item
+               (struct-item "<div class=\"structItem structItem--conversation\">sin link</div>"))))))

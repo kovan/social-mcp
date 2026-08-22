@@ -151,7 +151,13 @@
 
 (defn- parse-post [^Element article]
   (let [author (.attr article "data-author")
-        post-id (str/replace (.attr article "data-content") "post-" "")
+        ;; Thread posts carry data-content="post-N"; conversation messages
+        ;; have no data-content at all, only a #convMessage-N anchor. Try
+        ;; both rather than assuming one shape.
+        post-id (or (second (re-find #"(\d+)$" (.attr article "data-content")))
+                    (second (re-find #"(\d+)$"
+                              (or (some-> (.selectFirst article "span.u-anchorTarget") (.attr "id")) "")))
+                    (.attr article "data-content"))
         date (or (some-> (.selectFirst article "time[datetime]") (.attr "datetime")) "")
         number (or (some-> (.selectFirst article ".message-attribution-opposite a:last-child") (.text)) "")
         wrapper (.selectFirst article ".bbWrapper")
@@ -889,6 +895,109 @@
         (let [{:keys [ok? error redirect]} (successful-reply-response (:body reply-resp))]
           (if ok?
             (str "Reply posted successfully to post " post-id " by " author "."
+                 (when (seq redirect)
+                   (str " " (absolute-url redirect))))
+            (throw (ex-info (str "Reply failed: " error)
+                            {:body (subs (or (:body reply-resp) "")
+                                         0 (min 500 (count (or (:body reply-resp) ""))))}))))))))
+
+;; --- Private conversations ---
+;;
+;; XenForo calls private messages "conversations". They reuse the same
+;; structItem list markup as forum threads and the same message markup as
+;; thread posts, so the parsing below stays close to list-forum-threads and
+;; read-thread rather than inventing new shapes.
+
+(defn- parse-conversation-item [^Element item]
+  ;; Unlike forum threads, the title is the anchor itself
+  ;; (a.structItem-title), not an anchor nested inside a title wrapper.
+  (let [title-link (.selectFirst item "a.structItem-title")
+        href (some-> title-link (.attr "href"))
+        latest-time (.selectFirst item ".structItem-cell--latest time")
+        participants (->> (.select item ".structItem-cell--main .structItem-parts a.username")
+                          (map #(str/trim (.text ^Element %)))
+                          (str/join ", "))]
+    (when (and title-link (seq href))
+      {:title (str/trim (.text title-link))
+       :url (canonical-thread-url href)
+       :participants participants
+       :latest (or (not-empty (some-> latest-time (.attr "datetime")))
+                   (some-> latest-time (.text) str/trim)
+                   "")
+       :unread? (.hasClass item "is-unread")})))
+
+(defn list-conversations []
+  (let [resp (get-page "https://www.burbuja.info/inmobiliaria/conversations/")]
+    (when-not (= 200 (:status resp))
+      (throw (ex-info (str "HTTP " (:status resp) " fetching conversations") {})))
+    (let [doc (Jsoup/parse ^String (:body resp))
+          items (let [primary (.select doc "div.structItem--conversation")]
+                  (if (.isEmpty primary) (.select doc "li.structItem--conversation") primary))
+          conversations (->> items
+                             (map parse-conversation-item)
+                             (filter some?)
+                             vec)]
+      (str "# Private conversations (" (count conversations) ")\n\n"
+           (if (seq conversations)
+             (str/join "\n\n"
+               (map-indexed
+                 (fn [i {:keys [title url participants latest unread?]}]
+                   (str (inc i) ". " (when unread? "[UNREAD] ") title
+                        "\n   " url
+                        (when (seq participants) (str "\n   With: " participants))
+                        (when (seq latest) (str "\n   Latest: " latest))))
+                 conversations))
+             "No conversations found.")))))
+
+(def ^:private conversation-message-selector
+  "article.message--conversationMessage, article[data-content^=message-]")
+
+(defn read-conversation [conversation-url]
+  (let [resp (get-page conversation-url)]
+    (when-not (= 200 (:status resp))
+      (throw (ex-info (str "HTTP " (:status resp) " fetching conversation") {:url conversation-url})))
+    (let [doc (Jsoup/parse ^String (:body resp))
+          title (or (some-> (.selectFirst doc "h1.p-title-value") (.text)) "Untitled")
+          articles (let [primary (.select doc conversation-message-selector)]
+                     (if (.isEmpty primary) (.select doc "article.message") primary))
+          posts (mapv parse-post articles)
+          last-page-el (.selectFirst doc ".pageNav-page:last-child a")
+          total-pages (or (some-> last-page-el (.text) parse-long) 1)
+          current-page-el (.selectFirst doc ".pageNav-page--current a, .pageNav-page--current span")
+          current-page (or (some-> current-page-el (.text) parse-long) 1)]
+      (str "# " title "\n"
+           "Page " current-page " of " total-pages
+           " (" (count posts) " messages on this page)\n\n"
+           (str/join "\n\n---\n\n" (map format-post posts))))))
+
+(defn reply-conversation [conversation-url message]
+  (let [resp (get-page conversation-url)]
+    (when-not (= 200 (:status resp))
+      (throw (ex-info (str "HTTP " (:status resp) " fetching conversation") {:url conversation-url})))
+    (let [doc (Jsoup/parse ^String (:body resp))
+          csrf (or (extract-csrf (:body resp))
+                   (throw (ex-info "No CSRF token on page" {})))
+          canonical (some-> (.selectFirst doc "link[rel=canonical]") (.attr "href"))
+          ;; Read the form's own action rather than hardcoding the reply
+          ;; route, same as reply-comment does for threads.
+          reply-form (or (.selectFirst doc "form.js-quickReply")
+                        (.selectFirst doc "form[action*=insert-reply]")
+                        (throw (ex-info "Cannot find reply form on conversation page" {:url conversation-url})))
+          reply-url (form-action-url reply-form conversation-url)
+          reply-resp (post-form reply-url
+                       {"message" message
+                        "_xfToken" csrf
+                        "_xfRequestUri" (or canonical conversation-url)
+                        "_xfNoRedirect" "1"
+                        "_xfResponseType" "json"}
+                       :ajax? true)]
+      (if-not (<= 200 (:status reply-resp) 303)
+        (throw (ex-info (str "Reply failed: HTTP " (:status reply-resp))
+                        {:body (subs (or (:body reply-resp) "")
+                                     0 (min 500 (count (or (:body reply-resp) ""))))}))
+        (let [{:keys [ok? error redirect]} (successful-xenforo-response (:body reply-resp))]
+          (if ok?
+            (str "Reply posted successfully to conversation."
                  (when (seq redirect)
                    (str " " (absolute-url redirect))))
             (throw (ex-info (str "Reply failed: " error)
