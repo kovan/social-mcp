@@ -3,7 +3,8 @@
   (:require [clojure.string :as str]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
-            [reddit.cookies :as cookies])
+            [reddit.cookies :as cookies]
+            [reddit.oauth :as oauth])
   (:import [java.net URLEncoder]))
 
 (def ^:private ua
@@ -49,7 +50,7 @@
               (println "Got modhash for" (get-in data [:data :name]))))
         (throw (ex-info "Could not get modhash - make sure you're logged in to Reddit in Chrome" {}))))))
 
-(defn- api-post [endpoint params]
+(defn- cookie-api-post [endpoint params]
   (init-cookies!)
   (fetch-modhash!)
   (let [body-file (java.io.File/createTempFile "reddit-resp" ".json")
@@ -80,7 +81,7 @@
      :body body
      :data (try (json/read-str body :key-fn keyword) (catch Exception _ nil))}))
 
-(defn- api-get
+(defn- cookie-api-get
   "Authenticated GET request to old.reddit.com."
   [url]
   (init-cookies!)
@@ -93,6 +94,27 @@
         _ (.waitFor proc)]
     (when (seq out)
       (json/read-str out :key-fn keyword))))
+
+(defn- api-post
+  "POST to /api/<endpoint>, via OAuth when configured, else Chrome cookies."
+  [endpoint params]
+  (if (oauth/enabled?)
+    (oauth/request :post (str "/api/" endpoint) (assoc params :api_type "json"))
+    (cookie-api-post endpoint params)))
+
+(defn- api-get
+  "Authenticated GET, via OAuth when configured, else Chrome cookies."
+  [url]
+  (if (oauth/enabled?)
+    (:data (oauth/request :get url))
+    (cookie-api-get url)))
+
+(defn- with-footer
+  "Append REDDIT_FOOTER (e.g. an AI disclosure) to text the bot publishes."
+  [text]
+  (if-let [footer (not-empty (System/getenv "REDDIT_FOOTER"))]
+    (str text "\n\n" footer)
+    text))
 
 (defn- relative-time [epoch-secs]
   (when epoch-secs
@@ -141,7 +163,7 @@
 (defn reply-comment
   "Reply to a comment or post on Reddit. thing-id is the fullname (t1_ or t3_ prefixed)."
   [thing-id message]
-  (let [resp (api-post "comment" {:thing_id thing-id :text message})
+  (let [resp (api-post "comment" {:thing_id thing-id :text (with-footer message)})
         errors (get-in resp [:data :json :errors])]
     (if (and (seq errors) (not= errors []))
       (throw (ex-info (str "Reddit API error: " (pr-str errors)) {:errors errors}))
@@ -174,7 +196,8 @@
   "Fetch the current user's recent comments."
   [n]
   (let [limit (min (max n 1) 100)
-        url (str "https://old.reddit.com/user/me/comments.json?limit=" limit "&raw_json=1")
+        url (str "https://old.reddit.com/user/" (or (oauth/username) "me")
+                 "/comments.json?limit=" limit "&raw_json=1")
         response (api-get url)
         items (get-in response [:data :children])]
     (if (seq items)
@@ -203,7 +226,7 @@
   "Submit a new post to a subreddit. kind is 'self' or 'link'."
   [subreddit title kind & {:keys [text url flair-id]}]
   (let [params (cond-> {:sr subreddit :title title :kind kind}
-                 text (assoc :text text)
+                 (= kind "self") (assoc :text (with-footer (or text "")))
                  url (assoc :url url)
                  flair-id (assoc :flair_id flair-id))
         resp (api-post "submit" params)

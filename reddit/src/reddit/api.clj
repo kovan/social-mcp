@@ -1,20 +1,23 @@
 (ns reddit.api
   "Read-only access to Reddit via public JSON endpoints."
   (:require [clojure.data.json :as json]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [reddit.oauth :as oauth]))
 
 (def ^:private ua
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
 
 (defn- fetch-json [url]
-  (let [pb (ProcessBuilder. ["curl" "-sSL"
-                              "-H" (str "User-Agent: " ua)
-                              url])
-        proc (.start pb)
-        out (str/trim (slurp (.getInputStream proc)))
-        _ (.waitFor proc)]
-    (when (seq out)
-      (json/read-str out :key-fn keyword))))
+  (if (oauth/enabled?)
+    (:data (oauth/request :get url))
+    (let [pb (ProcessBuilder. ["curl" "-sSL"
+                                "-H" (str "User-Agent: " ua)
+                                url])
+          proc (.start pb)
+          out (str/trim (slurp (.getInputStream proc)))
+          _ (.waitFor proc)]
+      (when (seq out)
+        (json/read-str out :key-fn keyword)))))
 
 (defn listing
   "Fetch a listing from Reddit. sort is one of hot/new/top/rising.
