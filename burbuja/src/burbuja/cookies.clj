@@ -22,14 +22,18 @@
 (defn get-cookies
   "Extract cookies for `domain` from Chrome's cookie store.
    Requires `pip install browser-cookie3`.
+   If BURBUJA_COOKIES_FILE is set, read the cookies from that JSON file
+   instead (for machines without Chrome).
    Returns a seq of {:name :value :path :host} maps."
   [domain]
-  (let [script (cookie-script domain)
-        pb (ProcessBuilder. ["python3" "-c" script])
-        proc (.start pb)
-        out (str/trim (slurp (.getInputStream proc)))
-        err (str/trim (slurp (.getErrorStream proc)))
-        exit (.waitFor proc)]
-    (when-not (zero? exit)
-      (throw (ex-info (str "Cookie extraction failed: " err) {:exit exit})))
-    (json/read-str out :key-fn keyword)))
+  (if-let [f (System/getenv "BURBUJA_COOKIES_FILE")]
+    (json/read-str (slurp f) :key-fn keyword)
+    (let [script (cookie-script domain)
+          pb (ProcessBuilder. ["python3" "-c" script])
+          proc (.start pb)
+          out (str/trim (slurp (.getInputStream proc)))
+          err (str/trim (slurp (.getErrorStream proc)))
+          exit (.waitFor proc)]
+      (when-not (zero? exit)
+        (throw (ex-info (str "Cookie extraction failed: " err) {:exit exit})))
+      (json/read-str out :key-fn keyword))))
