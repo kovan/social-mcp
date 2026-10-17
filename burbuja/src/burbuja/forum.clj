@@ -836,6 +836,18 @@
                               {:body (subs (or (:body save-resp) "")
                                            0 (min 500 (count (or (:body save-resp) ""))))})))))))))
 
+(defn- has-own-quote? [message]
+  (boolean (re-find #"(?i)\[quote[\]=\s]" (or message ""))))
+
+(defn- reply-bbcode
+  "Prepends XenForo's native quote of the replied post, unless the message
+  already carries its own [QUOTE] block (e.g. a partial quote); prepending
+  in that case would quote the post twice."
+  [native-quote-fn message]
+  (if (has-own-quote? message)
+    message
+    (str (native-quote-fn) "\n\n" message)))
+
 (defn reply-comment [post-url message & {:keys [expected-thread]}]
   (let [resp (get-page post-url)]
     (when-not (= 200 (:status resp))
@@ -855,10 +867,6 @@
           csrf (or (extract-csrf (:body resp))
                    (throw (ex-info "No CSRF token on page" {})))
           request-uri (or canonical post-url)
-          ;; Ask XenForo for the original BBCode instead of rebuilding a quote
-          ;; from rendered HTML. This preserves formatting and avoids embedded
-          ;; viewer configuration such as js-extraPhrases/lightbox JSON.
-          native-quote (fetch-native-quote post-id csrf request-uri)
           ;; Reply URL from quick-reply form
           reply-form (.selectFirst doc "form.js-quickReply")
           reply-url (cond
@@ -876,8 +884,12 @@
                         (if thread-base
                           (str thread-base "add-reply")
                           (throw (ex-info "Cannot determine reply URL - thread may be locked" {})))))
-          ;; Append the reply to XenForo's exact native quote block.
-          bbcode (str native-quote "\n\n" message)
+          ;; Append the reply to XenForo's exact native quote block, fetched
+          ;; as original BBCode rather than rebuilt from rendered HTML. This
+          ;; preserves formatting and avoids embedded viewer configuration
+          ;; such as js-extraPhrases/lightbox JSON.
+          bbcode (reply-bbcode #(fetch-native-quote post-id csrf request-uri)
+                               message)
           ;; POST the reply
           reply-resp (post-form reply-url
                        {"message" bbcode

@@ -255,3 +255,21 @@
   (testing "an item without a title link is not a conversation row"
     (is (nil? (#'burbuja.forum/parse-conversation-item
                (struct-item "<div class=\"structItem structItem--conversation\">sin link</div>"))))))
+
+(deftest reply-bbcode-skips-native-quote-when-message-quotes
+  (let [native (constantly "[QUOTE=\"X, post: 1\"]todo[/QUOTE]")]
+    (testing "plain message gets the native quote prepended"
+      (is (= "[QUOTE=\"X, post: 1\"]todo[/QUOTE]\n\nhola"
+             (#'burbuja.forum/reply-bbcode native "hola"))))
+    (testing "message with its own quote is posted as-is"
+      (doseq [m ["[QUOTE=\"X, post: 1\"]parte[/QUOTE]\n\nhola"
+                 "[quote]parte[/quote] hola"
+                 "texto\n[Quote=X]parte[/Quote]"]]
+        (is (= m (#'burbuja.forum/reply-bbcode native m)))))
+    (testing "native quote is not fetched when not needed"
+      (is (= "[QUOTE]a[/QUOTE]"
+             (#'burbuja.forum/reply-bbcode
+              #(throw (ex-info "should not fetch" {})) "[QUOTE]a[/QUOTE]"))))
+    (testing "words starting with quote are not mistaken for tags"
+      (is (= "[QUOTE=\"X, post: 1\"]todo[/QUOTE]\n\n[quoted] x"
+             (#'burbuja.forum/reply-bbcode native "[quoted] x"))))))

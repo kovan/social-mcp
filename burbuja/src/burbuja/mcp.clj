@@ -38,7 +38,7 @@
                                              :description "Maximum threads to return from the page (default 50, max 100)"}}
                   :required ["forum_url"]}}
    {:name "reply_comment"
-    :description "Reply to a specific post on burbuja.info, quoting the original post."
+    :description "Reply to a specific post on burbuja.info. The full original post is quoted automatically, unless the message already contains its own [QUOTE] block (e.g. a partial quote), in which case only the message is posted."
     :inputSchema {:type "object"
                   :properties {:post_url {:type "string"
                                           :description "URL of the post to reply to, e.g. https://www.burbuja.info/inmobiliaria/temas/example.12345/post-67890 or https://www.burbuja.info/inmobiliaria/posts/67890/"}
