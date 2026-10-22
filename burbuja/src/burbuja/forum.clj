@@ -396,15 +396,27 @@
       (second (re-find #"posts/(\d+)" post-url))
       (throw (ex-info "Cannot extract post ID from URL" {:url post-url}))))
 
+(defn- thread-id-from-url
+  "Numeric thread ID from a /temas/ URL, with or without slug
+  (.../temas/some-slug.12345/ or .../temas/12345/), or nil."
+  [url]
+  (some->> url (re-find #"/temas/(?:[^/?#]*\.)?(\d+)(?:[/?#]|$)") second))
+
 (defn- validate-expected-thread! [post-id canonical expected-thread]
-  (when (and expected-thread canonical)
-    (let [actual-thread (second (re-find #"(.*?/temas/[^/]+/)" canonical))
-          expected-base (second (re-find #"(.*?/temas/[^/]+)" expected-thread))]
-      (when (and actual-thread expected-base
-                 (not (str/starts-with? actual-thread expected-base)))
+  (when expected-thread
+    (let [expected-id (thread-id-from-url expected-thread)
+          actual-id (thread-id-from-url canonical)]
+      (when-not expected-id
+        (throw (ex-info (str "Cannot extract thread ID from expected thread URL: " expected-thread)
+                        {:expected expected-thread})))
+      (when-not actual-id
+        (throw (ex-info (str "Cannot determine thread of post " post-id
+                             " (canonical: " canonical ")")
+                        {:expected expected-thread :canonical canonical})))
+      (when (not= expected-id actual-id)
         (throw (ex-info (str "Post " post-id " belongs to a different thread. Expected: "
-                             expected-thread " but post is in: " actual-thread)
-                        {:expected expected-thread :actual actual-thread}))))))
+                             expected-thread " but post is in: " canonical)
+                        {:expected expected-thread :actual canonical}))))))
 
 (defn- form-action-url [^Element form fallback-url]
   (let [action (some-> form (.attr "action"))]
