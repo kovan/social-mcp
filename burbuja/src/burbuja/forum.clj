@@ -76,8 +76,28 @@
 (defn- get-page [url]
   (curl-request url))
 
-(defn- post-form [url params & {:keys [ajax?]}]
-  (curl-request url :method :post :params params :ajax? ajax?))
+(defn- flood-wait-seconds
+  "Seconds XenForo's flood check asks us to wait (\"Debe esperar al menos N
+  segundos...\"), or nil when the response is not a flood-check rejection."
+  [body]
+  (some->> body
+           (re-find #"(?:Debe esperar al menos|must wait at least) (\d+) (?:segundos?|seconds?)")
+           second
+           parse-long))
+
+(def ^:private flood-retries 3)
+
+(defn- post-form
+  "POSTs a form. When the forum's flood check rejects the request (it does so
+  before acting, so nothing was posted), waits the requested time and retries."
+  [url params & {:keys [ajax?]}]
+  (loop [attempt 0]
+    (let [resp (curl-request url :method :post :params params :ajax? ajax?)
+          wait (flood-wait-seconds (:body resp))]
+      (if (and wait (< attempt flood-retries))
+        (do (Thread/sleep (* 1000 (inc wait)))
+            (recur (inc attempt)))
+        resp))))
 
 (defn- extract-csrf [body]
   (let [doc (Jsoup/parse ^String body)]
@@ -774,6 +794,48 @@
       {:ok? false
        :error (str "Unexpected XenForo response: "
                    (subs body 0 (min 500 (count body))))})))
+
+(defn report-post
+  "Reports a post to the forum moderators with the given reason. The report
+  form lives at /posts/ID/report and only takes a free-text message."
+  [post-url reason & {:keys [expected-thread]}]
+  (when (str/blank? reason)
+    (throw (ex-info "A report needs a reason" {})))
+  (let [post-id (post-id-from-url post-url)
+        report-url (str "https://www.burbuja.info/inmobiliaria/posts/" post-id "/report")
+        resp (get-page report-url)]
+    (when-not (= 200 (:status resp))
+      (throw (ex-info (str "HTTP " (:status resp) " fetching report form") {:url report-url})))
+    (let [doc (Jsoup/parse ^String (:body resp))
+          form (or (.selectFirst doc (str "form[action*=\"/posts/" post-id "/report\"]"))
+                   (throw (ex-info (str "Report form for post " post-id " not found")
+                                   {:url report-url})))
+          canonical (when expected-thread
+                      (some-> (get-page post-url) :body
+                              (#(Jsoup/parse ^String %))
+                              (.selectFirst "link[rel=canonical]")
+                              (.attr "href")))
+          _ (validate-expected-thread! post-id canonical expected-thread)
+          csrf (or (input-value form "_xfToken")
+                   (extract-csrf (:body resp))
+                   (throw (ex-info "No CSRF token on report form" {})))
+          send-resp (post-form (form-action-url form report-url)
+                               {"message" reason
+                                "_xfToken" csrf
+                                "_xfRequestUri" (or canonical post-url)
+                                "_xfNoRedirect" "1"
+                                "_xfResponseType" "json"}
+                               :ajax? true)]
+      (if-not (<= 200 (:status send-resp) 303)
+        (throw (ex-info (str "Report failed: HTTP " (:status send-resp))
+                        {:body (subs (or (:body send-resp) "")
+                                     0 (min 500 (count (or (:body send-resp) ""))))}))
+        (let [{:keys [ok? error]} (successful-xenforo-response (:body send-resp))]
+          (if ok?
+            (str "Post " post-id " reported successfully.")
+            (throw (ex-info (str "Report failed: " error)
+                            {:body (subs (or (:body send-resp) "")
+                                         0 (min 500 (count (or (:body send-resp) ""))))}))))))))
 
 (defn- successful-reply-response [body]
   (successful-xenforo-response body))

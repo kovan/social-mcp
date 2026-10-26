@@ -63,6 +63,16 @@
                   :properties {:post_url {:type "string"
                                           :description "URL of the post to delete, e.g. https://www.burbuja.info/inmobiliaria/posts/67890/"}}
                   :required ["post_url"]}}
+   {:name "report_post"
+    :description "Report a post on burbuja.info to the forum moderators, with a reason."
+    :inputSchema {:type "object"
+                  :properties {:post_url {:type "string"
+                                          :description "URL of the post to report, e.g. https://www.burbuja.info/inmobiliaria/posts/67890/"}
+                               :reason {:type "string"
+                                        :description "Why the post is being reported (shown to moderators)"}
+                               :thread_url {:type "string"
+                                            :description "Expected thread URL. If provided, the report will fail if the post does not belong to this thread."}}
+                  :required ["post_url" "reason"]}}
    {:name "edit_post"
     :description "Edit one of your own posts on burbuja.info. Replaces the full post body with the provided text."
     :inputSchema {:type "object"
@@ -182,6 +192,10 @@
 
                    "delete_post"
                    (forum/delete-post (:post_url arguments))
+
+                   "report_post"
+                   (forum/report-post (:post_url arguments) (:reason arguments)
+                                      :expected-thread (:thread_url arguments))
 
                    "edit_post"
                    (forum/edit-post (:post_url arguments) (:message arguments)

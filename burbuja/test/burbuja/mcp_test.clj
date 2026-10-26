@@ -23,3 +23,11 @@
           error-text (get-in response [:result :content 0 :text])]
       (is (= "Error: Missing required arguments for reply_comment: post_url, message"
              error-text)))))
+
+(deftest report-post-requires-a-reason
+  (let [response (#'burbuja.mcp/handle-tools-call
+                  3
+                  {:name "report_post"
+                   :arguments {:post_url "https://www.burbuja.info/inmobiliaria/posts/1/"}})]
+    (is (= "Error: Missing required argument for report_post: reason"
+           (get-in response [:result :content 0 :text])))))

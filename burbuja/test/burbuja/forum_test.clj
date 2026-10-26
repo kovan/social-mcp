@@ -273,3 +273,26 @@
     (testing "words starting with quote are not mistaken for tags"
       (is (= "[QUOTE=\"X, post: 1\"]todo[/QUOTE]\n\n[quoted] x"
              (#'burbuja.forum/reply-bbcode native "[quoted] x"))))))
+
+(deftest report-post-rejects-a-blank-reason-before-any-request
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo
+       #"A report needs a reason"
+       (burbuja.forum/report-post "https://www.burbuja.info/inmobiliaria/posts/1/" "  "))))
+
+(deftest flood-wait-seconds-reads-the-flood-check-message
+  (is (= 8 (#'burbuja.forum/flood-wait-seconds
+            "{\"status\":\"error\",\"errors\":[\"Debe esperar al menos 8 segundos antes de realizar esta acci\\u00f3n.\"]}")))
+  (is (= 1 (#'burbuja.forum/flood-wait-seconds "You must wait at least 1 second before performing this action.")))
+  (is (nil? (#'burbuja.forum/flood-wait-seconds "{\"status\":\"ok\"}")))
+  (is (nil? (#'burbuja.forum/flood-wait-seconds nil))))
+
+(deftest post-form-retries-after-a-flood-check-rejection
+  (let [calls (atom 0)]
+    (with-redefs [burbuja.forum/curl-request
+                  (fn [& _]
+                    (if (= 1 (swap! calls inc))
+                      {:status 200 :body "Debe esperar al menos 0 segundos antes de realizar esta acción."}
+                      {:status 200 :body "{\"status\":\"ok\"}"}))]
+      (is (= "{\"status\":\"ok\"}" (:body (#'burbuja.forum/post-form "https://example.org" {}))))
+      (is (= 2 @calls)))))
