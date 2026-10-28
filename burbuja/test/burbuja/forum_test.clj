@@ -296,3 +296,21 @@
                       {:status 200 :body "{\"status\":\"ok\"}"}))]
       (is (= "{\"status\":\"ok\"}" (:body (#'burbuja.forum/post-form "https://example.org" {}))))
       (is (= 2 @calls)))))
+
+(deftest parse-new-posts-page-reads-items-and-next-link
+  (let [html (str "<div class=\"structItem structItem--thread\" data-author=\"Ana\">"
+                  "<div class=\"structItem-title\"><a href=\"/inmobiliaria/temas/hilo.123/unread\" data-preview-url=\"/x\">Un hilo</a></div>"
+                  "<li class=\"structItem-startDate\"><time data-timestamp=\"1000\"></time></li>"
+                  "<div class=\"structItem-cell--meta\"><dd>7</dd></div>"
+                  "<time class=\"structItem-latestDate\" data-timestamp=\"2000\"></time></div>"
+                  "<a href=\"/inmobiliaria/whats-new/posts/9/page-2\" class=\"pageNav-jump pageNav-jump--next\">Siguiente</a>")
+        {:keys [items next]} (#'burbuja.forum/parse-new-posts-page html)
+        item (first items)]
+    (is (= 1 (count items)))
+    (is (= "Un hilo" (:title item)))
+    (is (= "https://www.burbuja.info/inmobiliaria/temas/hilo.123/" (:url item)))
+    (is (= "Ana" (:author item)))
+    (is (= 1000000 (:started-ms item)))
+    (is (= 2000000 (:latest-ms item)))
+    (is (= "7" (:replies item)))
+    (is (= "https://www.burbuja.info/inmobiliaria/whats-new/posts/9/page-2" next))))

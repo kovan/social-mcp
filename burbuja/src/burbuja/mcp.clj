@@ -22,8 +22,14 @@
                                :types {:type "string"
                                        :description "Comma-separated alert kinds to include: quote, reaction (thanks), reply, follow, or all. Default \"quote,reaction\"."}}}}
    {:name "list_new_posts"
-    :description "List threads with new posts on burbuja.info (whats-new feed). Returns thread titles and URLs."
-    :inputSchema {:type "object" :properties {}}}
+    :description "List threads with new posts on burbuja.info (whats-new feed), with author, start date, replies and last-post age. Without hours, returns the first page (30 threads). With hours, follows the feed's pages until activity is older than that window, marking threads created within it as [NEW THREAD]."
+    :inputSchema {:type "object"
+                  :properties {:hours {:type "number"
+                                       :description "Only threads with activity in the last N hours, fetching as many pages as needed (optional)"}
+                               :max_pages {:type "number"
+                                           :description "Safety cap on feed pages to fetch (default 1 without hours, 15 with hours; max 30)"}
+                               :new_threads_only {:type "boolean"
+                                                  :description "With hours, keep only threads created within the window"}}}}
    {:name "list_trending"
     :description "List today's trending threads on burbuja.info. Returns thread titles and URLs."
     :inputSchema {:type "object" :properties {}}}
@@ -169,7 +175,13 @@
                      (forum/list-alerts (or pages 3) hours (:types arguments)))
 
                    "list_new_posts"
-                   (forum/list-new-posts)
+                   (let [hours (when-let [h (:hours arguments)]
+                                 (if (string? h) (parse-double h) (double h)))
+                         pages (when-let [p (:max_pages arguments)]
+                                 (min (max (int (if (string? p) (parse-long p) p)) 1) 30))
+                         new-only (let [v (:new_threads_only arguments)]
+                                    (or (true? v) (= "true" v)))]
+                     (forum/list-new-posts hours (or pages (if hours 15 1)) new-only))
 
                    "list_trending"
                    (forum/list-trending)

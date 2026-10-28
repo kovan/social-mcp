@@ -360,30 +360,88 @@
             (str/join "\n\n" sections)
             "No alerts of the requested types.")))))
 
-(defn list-new-posts []
-  (let [resp (get-page "https://www.burbuja.info/inmobiliaria/whats-new/posts/")]
-    (when-not (= 200 (:status resp))
-      (throw (ex-info (str "HTTP " (:status resp) " fetching new posts") {})))
-    (let [doc (Jsoup/parse ^String (:body resp))
-          links (.select doc "a[data-preview-url]")
-          seen (atom #{})
-          threads (for [^Element a links
-                        :let [href (.attr a "href")
-                              title (str/trim (.text a))
-                              clean (str/replace href #"(page-\d+|post-\d+|unread|/latest)/?$" "")]
-                        :when (and (re-find #"/temas/" href)
-                                   (seq title)
-                                   (not (contains? @seen clean)))]
-                    (do (swap! seen conj clean)
-                        {:title title
-                         :url (if (str/starts-with? clean "http")
-                                clean
-                                (str "https://www.burbuja.info" clean))}))]
-      (str "# New posts (" (count threads) " threads)\n\n"
-           (str/join "\n" (map-indexed
-                            (fn [i {:keys [title url]}]
-                              (str (inc i) ". " title "\n   " url))
-                            threads))))))
+(defn- time-epoch-ms [^Element el]
+  (some-> el (.attr "data-timestamp") parse-long (* 1000)))
+
+(defn- parse-new-posts-page
+  "Thread items on one whats-new page, plus the URL of the next page if any."
+  [^String html]
+  (let [doc (Jsoup/parse html)
+        items (for [^Element item (.select doc "div.structItem--thread")
+                    :let [a (.selectFirst item "div.structItem-title a[data-preview-url]")
+                          href (some-> a (.attr "href"))
+                          title (some-> a (.text) str/trim)]
+                    :when (and href (re-find #"/temas/" href) (seq title))]
+                {:title title
+                 :url (absolute-url
+                       (str/replace href #"(page-\d+|post-\d+|unread|latest)/?$" ""))
+                 :author (.attr item "data-author")
+                 :started-ms (time-epoch-ms (.selectFirst item ".structItem-startDate time"))
+                 :latest-ms (time-epoch-ms (.selectFirst item "time.structItem-latestDate"))
+                 :replies (some-> (.selectFirst item ".structItem-cell--meta dd") (.text))})
+        next-href (some-> (.selectFirst doc "a.pageNav-jump--next") (.attr "href"))]
+    {:items (vec items)
+     :next (some-> next-href absolute-url)}))
+
+(defn- hours-ago [now-ms epoch-ms]
+  (when epoch-ms (/ (double (- now-ms epoch-ms)) 3600000.0)))
+
+(defn list-new-posts
+  "Threads from the whats-new feed. With `hours`, follows the feed's pages
+  until the latest activity is older than that, so nothing in the window is
+  missed; `new-only` keeps just threads created within the window."
+  ([] (list-new-posts nil 1 false))
+  ([hours max-pages new-only]
+   (let [now-ms (System/currentTimeMillis)
+         in-window? (fn [ms] (or (nil? hours) (nil? ms)
+                                 (<= (hours-ago now-ms ms) hours)))
+         pages (loop [url "https://www.burbuja.info/inmobiliaria/whats-new/posts/"
+                      n 1
+                      acc []]
+                 (let [resp (get-page url)]
+                   (when-not (= 200 (:status resp))
+                     (throw (ex-info (str "HTTP " (:status resp) " fetching new posts") {})))
+                   (let [{:keys [items next]} (parse-new-posts-page (:body resp))
+                         acc (into acc items)
+                         ;; The feed is ordered by latest activity, so once the
+                         ;; last item falls outside the window the rest do too.
+                         older? (and hours (seq items)
+                                     (not (in-window? (:latest-ms (peek items)))))]
+                     (if (or older? (nil? next) (>= n max-pages))
+                       {:items acc :pages n :truncated? (and next (not older?) (>= n max-pages))}
+                       (recur next (inc n) acc)))))
+         threads (->> (:items pages)
+                      (reduce (fn [[seen out] t]
+                                (if (contains? seen (:url t))
+                                  [seen out]
+                                  [(conj seen (:url t)) (conj out t)]))
+                              [#{} []])
+                      second
+                      (filter #(in-window? (:latest-ms %)))
+                      (filter #(or (not new-only)
+                                   (and hours (some-> (hours-ago now-ms (:started-ms %))
+                                                      (<= hours))))))
+         fmt-age (fn [ms] (if-let [h (hours-ago now-ms ms)]
+                            (if (< h 1) (str (Math/round (* 60 h)) "m")
+                                (if (< h 48) (format "%.1fh" h)
+                                    (str (Math/round (/ h 24)) "d")))
+                            "?"))
+         fresh? (fn [t] (and hours (some-> (hours-ago now-ms (:started-ms t)) (<= hours))))]
+     (str "# New posts (" (count threads) " threads"
+          (when hours (str ", last " hours "h"))
+          ", " (:pages pages) " page" (when (not= 1 (:pages pages)) "s")
+          (when (:truncated? pages) ", page limit reached: older threads in the window were not fetched")
+          ")\n\n"
+          (str/join "\n"
+                    (map-indexed
+                     (fn [i {:keys [title url author started-ms latest-ms replies] :as t}]
+                       (str (inc i) ". " (when (fresh? t) "[NEW THREAD] ") title
+                            "\n   " url
+                            "\n   by " (or (not-empty author) "?")
+                            ", started " (fmt-age started-ms) " ago"
+                            ", " (or replies "?") " replies"
+                            ", last post " (fmt-age latest-ms) " ago"))
+                     threads))))))
 
 (defn list-trending []
   (let [resp (get-page "https://www.burbuja.info/inmobiliaria/trending/")]
