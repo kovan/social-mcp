@@ -93,7 +93,19 @@
         out (str/trim (slurp (.getInputStream proc)))
         _ (.waitFor proc)]
     (when (seq out)
-      (json/read-str out :key-fn keyword))))
+      (if (str/starts-with? out "<")
+        ;; Reddit served an HTML page instead of JSON; surface what it says
+        (let [title (second (re-find #"(?is)<title[^>]*>(.*?)</title>" out))
+              text (-> out
+                       (str/replace #"(?is)<(script|style)[^>]*>.*?</\1>" " ")
+                       (str/replace #"<[^>]*>" " ")
+                       (str/replace #"\s+" " ")
+                       str/trim)]
+          (throw (ex-info (str "Reddit returned HTML instead of JSON. Title: "
+                               (some-> title str/trim)
+                               " | Text: " (subs text 0 (min 800 (count text))))
+                          {:url url})))
+        (json/read-str out :key-fn keyword)))))
 
 (defn- api-post
   "POST to /api/<endpoint>, via OAuth when configured, else Chrome cookies."
